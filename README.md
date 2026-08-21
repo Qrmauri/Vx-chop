@@ -14,6 +14,8 @@ Sampler y slicer de audio creado con React y Vite. Permite cargar un sample desd
 - Control de pitch de `-12` a `+12` semitonos.
 - Zoom de la vista del waveform y enfoque sobre el corte seleccionado.
 - Deteccion aproximada de nota, frecuencia y desviacion en cents.
+- Analizador de espectro en tiempo real (barras de frecuencia) de lo que se esta reproduciendo.
+- Barra de duracion/playhead estilo Serato Sample: muestra tiempo actual, tiempo total y una linea que recorre el waveform mientras suena un corte.
 - Exportacion de los cortes en el orden de la lista como archivo `vxchop-export.wav`.
 
 ## Tecnologias
@@ -60,6 +62,16 @@ Para previsualizar la compilacion:
 ```bash
 npm run preview
 ```
+
+## Publicacion compartida
+
+El repositorio incluye un workflow para publicar VX-CHOP en GitHub Pages. Despues de subir los cambios a `main`:
+
+1. En GitHub, abre `Settings > Pages`.
+2. En `Build and deployment`, selecciona `GitHub Actions` como fuente.
+3. Espera a que termine el workflow `Deploy VX-CHOP`.
+
+La URL sera `https://mqrbeats-tech.github.io/pagina-personal/`. Cada persona podra abrir la app y cargar su propio sample; el audio y los cortes se procesan localmente y no se comparten entre usuarios.
 
 ## Uso rapido
 

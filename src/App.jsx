@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 const COLORS = ['#b8f05a', '#55d6be', '#ff7a66', '#52a8ff', '#f7c95f', '#78e8d0', '#ff9f43', '#e66b8c'];
 const PAD_KEYS = ['1', '2', '3', '4', 'q', 'w', 'e', 'r', 'a', 's', 'd', 'f', 'z', 'x', 'c', 'v'];
 const MIN_CUT = 0.03;
+const SPECTRUM_BARS = 64;
 
 const formatTime = (seconds) => {
   if (!Number.isFinite(seconds)) return '0:00.00';
@@ -48,11 +49,18 @@ function NoteDetector({ buffer, result, onDetect }) {
 
 function App() {
   const canvasRef = useRef(null);
+  const spectrumCanvasRef = useRef(null);
   const audioContextRef = useRef(null);
+  const analyserRef = useRef(null);
+  const spectrumRafRef = useRef(null);
   const bufferRef = useRef(null);
   const activeSourceRef = useRef(null);
   const playbackTimersRef = useRef([]);
   const dragRef = useRef(null);
+  const playbackStateRef = useRef(null); // { chop, startAudioTime, rate } of what's currently sounding
+  const playheadPositionRef = useRef(null); // absolute time (s) within the buffer, or null when idle
+  const durationFillRef = useRef(null);
+  const currentTimeLabelRef = useRef(null);
   const [fileInfo, setFileInfo] = useState('Sin sample cargado');
   const [status, setStatus] = useState('Listo.');
   const [warning, setWarning] = useState('');
@@ -65,7 +73,15 @@ function App() {
   const [noteResult, setNoteResult] = useState(null);
 
   const getAudioContext = () => {
-    if (!audioContextRef.current) audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+    if (!audioContextRef.current) {
+      const context = new (window.AudioContext || window.webkitAudioContext)();
+      audioContextRef.current = context;
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 2048;
+      analyser.smoothingTimeConstant = 0.82;
+      analyser.connect(context.destination);
+      analyserRef.current = analyser;
+    }
     if (audioContextRef.current.state === 'suspended') audioContextRef.current.resume();
     return audioContextRef.current;
   };
@@ -77,6 +93,12 @@ function App() {
     }
     playbackTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     playbackTimersRef.current = [];
+    playbackStateRef.current = null;
+  };
+
+  const setDurationDisplay = (position, total) => {
+    if (currentTimeLabelRef.current) currentTimeLabelRef.current.textContent = formatTime(position);
+    if (durationFillRef.current) durationFillRef.current.style.width = total > 0 ? `${Math.min(100, (position / total) * 100)}%` : '0%';
   };
 
   const loadFile = async (file) => {
@@ -95,6 +117,8 @@ function App() {
       setFileInfo(`${file.name} · ${formatTime(decoded.duration)} · ${decoded.sampleRate} Hz · ${decoded.numberOfChannels}ch`);
       setWarning(decoded.duration > 600 ? 'Sample largo: la vista se simplifica para mantener fluidez.' : '');
       setStatus('Sample cargado. Arrastra sobre el waveform para crear un corte.');
+      playheadPositionRef.current = null;
+      setDurationDisplay(0, decoded.duration);
     } catch (error) {
       console.error(error);
       setStatus('Error al leer el archivo.');
@@ -120,6 +144,39 @@ function App() {
   useEffect(() => {
     drawWaveform();
   }, [buffer, chops, selectedId, zoom, viewStart]);
+
+  // Spectrum analyzer + playhead: keeps drawing continuously so both reflect
+  // whatever is currently playing through the shared AnalyserNode.
+  useEffect(() => {
+    const tick = () => {
+      drawSpectrum();
+      updatePlayhead();
+      spectrumRafRef.current = requestAnimationFrame(tick);
+    };
+    spectrumRafRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (spectrumRafRef.current) cancelAnimationFrame(spectrumRafRef.current);
+    };
+  }, []);
+
+  const updatePlayhead = () => {
+    const state = playbackStateRef.current;
+    const context = audioContextRef.current;
+    const total = bufferRef.current?.duration || 0;
+    if (!state || !context) {
+      if (playheadPositionRef.current !== null) {
+        playheadPositionRef.current = null;
+        setDurationDisplay(0, total);
+        drawWaveform();
+      }
+      return;
+    }
+    const elapsed = (context.currentTime - state.startAudioTime) * state.rate;
+    const position = Math.min(state.chop.end, state.chop.start + Math.max(0, elapsed));
+    playheadPositionRef.current = position;
+    setDurationDisplay(position, total);
+    drawWaveform();
+  };
 
   useEffect(() => {
     const onKeyDown = (event) => {
@@ -183,6 +240,61 @@ function App() {
       context.moveTo(x, height / 2 + min * height * .46); context.lineTo(x, height / 2 + max * height * .46);
     }
     context.stroke();
+    const playheadTime = playheadPositionRef.current;
+    if (playheadTime !== null && playheadTime >= visibleStart && playheadTime <= visibleStart + visible) {
+      const playheadX = timeToX(playheadTime);
+      context.strokeStyle = '#ffffff';
+      context.lineWidth = 1.5;
+      context.beginPath(); context.moveTo(playheadX, 0); context.lineTo(playheadX, height); context.stroke();
+      context.fillStyle = '#ffffff';
+      context.beginPath(); context.moveTo(playheadX - 4, 0); context.lineTo(playheadX + 4, 0); context.lineTo(playheadX, 6); context.closePath(); context.fill();
+    }
+  };
+
+  const drawSpectrum = () => {
+    const canvas = spectrumCanvasRef.current;
+    if (!canvas) return;
+    const ratio = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    const targetWidth = Math.max(1, Math.round(rect.width * ratio));
+    const targetHeight = Math.max(1, Math.round(rect.height * ratio));
+    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+    }
+    const context = canvas.getContext('2d');
+    const width = canvas.width / ratio;
+    const height = canvas.height / ratio;
+    if (!context || width <= 0 || height <= 0) return;
+    context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    context.fillStyle = '#0c1210';
+    context.fillRect(0, 0, width, height);
+
+    const analyser = analyserRef.current;
+    if (!analyser) {
+      context.fillStyle = '#3a4a44'; context.font = '12px monospace'; context.fillText('- sin señal -', width / 2 - 36, height / 2 + 4);
+      return;
+    }
+
+    const freqData = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(freqData);
+
+    // Log-ish grouping so low frequencies (kick/bass, where most chop energy
+    // lives) get more visual resolution than the very top of the spectrum.
+    const barWidth = width / SPECTRUM_BARS;
+    for (let bar = 0; bar < SPECTRUM_BARS; bar += 1) {
+      const t0 = bar / SPECTRUM_BARS;
+      const t1 = (bar + 1) / SPECTRUM_BARS;
+      const startIndex = Math.floor((freqData.length * t0) ** 1.6 / (freqData.length ** 0.6));
+      const endIndex = Math.max(startIndex + 1, Math.floor((freqData.length * t1) ** 1.6 / (freqData.length ** 0.6)));
+      let sum = 0; let count = 0;
+      for (let index = startIndex; index < Math.min(freqData.length, endIndex); index += 1) { sum += freqData[index]; count += 1; }
+      const value = count ? sum / count : 0;
+      const barHeight = (value / 255) * height;
+      const hue = 96 - (bar / SPECTRUM_BARS) * 70;
+      context.fillStyle = `hsl(${hue}, 75%, 60%)`;
+      context.fillRect(bar * barWidth + 1, height - barHeight, Math.max(1, barWidth - 2), barHeight);
+    }
   };
 
   const canvasTime = (event) => {
@@ -242,9 +354,15 @@ function App() {
     if (!bufferRef.current) return;
     if (cancelSequence) stopAll();
     const context = getAudioContext(); const source = context.createBufferSource();
-    source.buffer = bufferRef.current; source.playbackRate.value = 2 ** (pitch / 12); source.connect(context.destination);
+    const rate = 2 ** (pitch / 12);
+    source.buffer = bufferRef.current; source.playbackRate.value = rate;
+    source.connect(analyserRef.current || context.destination);
     source.start(0, chop.start, chop.end - chop.start); activeSourceRef.current = source;
-    source.onended = () => { if (activeSourceRef.current === source) activeSourceRef.current = null; };
+    playbackStateRef.current = { chop, startAudioTime: context.currentTime, rate };
+    source.onended = () => {
+      if (activeSourceRef.current === source) activeSourceRef.current = null;
+      if (playbackStateRef.current?.chop === chop) playbackStateRef.current = null;
+    };
     setStatus(`Reproduciendo "${chop.name}"...`);
   };
 
@@ -310,7 +428,10 @@ function App() {
     <label className="dropzone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); if (event.dataTransfer.files[0]) loadFile(event.dataTransfer.files[0]); }}>
       <p><strong>Arrastra un archivo de audio aquí</strong> (WAV, MP3, OGG)</p><p>o haz clic para seleccionar un archivo</p><input type="file" accept="audio/*" onChange={(event) => event.target.files[0] && loadFile(event.target.files[0])} />
     </label>
-    <section className="main-grid"><div className="panel"><h2><span className={`led ${buffer ? 'on' : ''}`} />Waveform</h2><div className="zoom-controls"><button className="btn small icon" onClick={() => setZoom((value) => Math.max(1, value / 1.5))}>-</button><span>{Math.round(zoom * 100)}%</span><button className="btn small icon" onClick={() => setZoom((value) => Math.min(20, value * 1.5))}>+</button><button className="btn small" onClick={() => setZoom(1)}>Reset</button></div><div className="screen-wrap"><canvas ref={canvasRef} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} /></div><p className="screen-hint">Clic y arrastra para crear cortes. Los pads responden a <kbd>1234 / qwer / asdf / zxcv</kbd>.</p><div className="transport"><button className="btn" disabled={!chops.length} onClick={playAll}>▶ Reproducir todo</button><button className="btn" disabled={!buffer} onClick={() => { stopAll(); setStatus('Detenido.'); }}>■ Stop</button><button className="btn primary" disabled={!chops.length} onClick={exportMix}>⇩ Exportar WAV</button><div className="pitch-block"><label>Pitch estilo vinilo</label><div className="pitch-row"><input type="range" min="-12" max="12" value={pitch} onChange={(event) => setPitch(Number(event.target.value))} /><span className="pitch-value">{pitch > 0 ? '+' : ''}{pitch} st</span></div></div></div></div>
+    <section className="main-grid"><div className="panel"><h2><span className={`led ${buffer ? 'on' : ''}`} />Waveform</h2><div className="zoom-controls"><button className="btn small icon" onClick={() => setZoom((value) => Math.max(1, value / 1.5))}>-</button><span>{Math.round(zoom * 100)}%</span><button className="btn small icon" onClick={() => setZoom((value) => Math.min(20, value * 1.5))}>+</button><button className="btn small" onClick={() => setZoom(1)}>Reset</button></div><div className="screen-wrap"><canvas ref={canvasRef} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} /></div>
+        <div className="duration-bar"><span ref={currentTimeLabelRef} className="duration-current">0:00.00</span><div className="duration-track"><div ref={durationFillRef} className="duration-fill" /></div><span className="duration-total">{formatTime(buffer?.duration || 0)}</span></div>
+        <p className="screen-hint">Clic y arrastra para crear cortes. Los pads responden a <kbd>1234 / qwer / asdf / zxcv</kbd>.</p><div className="transport"><button className="btn" disabled={!chops.length} onClick={playAll}>▶ Reproducir todo</button><button className="btn" disabled={!buffer} onClick={() => { stopAll(); setStatus('Detenido.'); }}>■ Stop</button><button className="btn primary" disabled={!chops.length} onClick={exportMix}>⇩ Exportar WAV</button><div className="pitch-block"><label>Pitch estilo vinilo</label><div className="pitch-row"><input type="range" min="-12" max="12" value={pitch} onChange={(event) => setPitch(Number(event.target.value))} /><span className="pitch-value">{pitch > 0 ? '+' : ''}{pitch} st</span></div></div></div>
+        <div className="spectrum-wrap"><canvas ref={spectrumCanvasRef} /></div><p className="screen-hint">Espectro en tiempo real de lo que se está reproduciendo.</p></div>
       <div className="panel"><h2>Chops <span className="count">{chops.length ? `(${chops.length})` : ''}</span></h2>{chops.length ? <ul className="chop-list">{chops.map((chop, index) => <li className={`chop-item ${selectedId === chop.id ? 'selected' : ''}`} key={chop.id} onClick={() => setSelectedId(chop.id)}><span className="chop-index">{index + 1}</span><span className="chop-swatch" style={{ background: chop.color }} /><input className="chop-name" value={chop.name} onChange={(event) => renameChop(chop.id, event.target.value)} onClick={(event) => event.stopPropagation()} /><span className="chop-time">{formatTime(chop.end - chop.start)}</span><span className="chop-actions"><button className="btn small icon" onClick={(event) => { event.stopPropagation(); playChop(chop); }}>▶</button><button className="btn small icon danger" onClick={(event) => { event.stopPropagation(); removeChop(chop.id); }}>x</button></span></li>)}</ul> : <div className="empty-hint">Todavía no hay chops.<br />Carga un sample y dibuja una selección.</div>}</div></section>
     <section className="panel pad-panel"><h2>Pads <span className="subheading">Dispara chops con clic o teclado</span></h2>{chops.length ? <div className="pad-grid">{chops.map((chop, index) => <button className={`pad ${selectedId === chop.id ? 'selected' : ''}`} style={{ '--pad-color': chop.color }} key={chop.id} onClick={() => { setSelectedId(chop.id); playChop(chop); }}><span className="pad-key">{(PAD_KEYS[index] || index + 1).toUpperCase()}</span><span className="pad-name">{chop.name}</span></button>)}</div> : <div className="empty-hint">Los pads se llenan automáticamente con los cortes.</div>}</section>
     <footer className="status"><span>{status}</span><span className="warn">{warning}</span></footer>

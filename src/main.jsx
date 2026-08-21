@@ -4,6 +4,8 @@ import App from './App.jsx';
 import './styles.css';
 import './zoom.css';
 import './note.css';
+import './spectrum.css';
+import './duration.css';
 
 createRoot(document.getElementById('root')).render(
   <React.StrictMode>
