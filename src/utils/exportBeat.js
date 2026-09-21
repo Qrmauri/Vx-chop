@@ -178,13 +178,16 @@ export async function exportFullBeatToWav({
             playBass(offlineCtx, trackGain, stepTime, vel, note);
             break;
           case 'chop': {
-            if (mainBuffer && chops.length > 0) {
+            if (chops && chops.length > 0) {
               const chopIdx = (stepData.chopIndex || 0) % chops.length;
               const chop = chops[chopIdx];
-              if (chop) {
-                const chopDuration = chop.end - chop.start;
+              const s = chop?.buffer || mainBuffer;
+              if (chop && s) {
+                const startSec = Math.max(0, chop.start !== undefined ? chop.start : 0);
+                const endSec = (chop.end !== undefined && chop.end > startSec) ? chop.end : s.duration;
+                const chopDuration = Math.max(0.01, endSec - startSec);
                 const source = offlineCtx.createBufferSource();
-                source.buffer = mainBuffer;
+                source.buffer = s;
                 source.playbackRate.setValueAtTime(rate, stepTime);
 
                 // Calcular si hay un corte posterior para cortar este sample (Choke)
@@ -219,7 +222,7 @@ export async function exportFullBeatToWav({
 
                 source.connect(chopGain);
                 chopGain.connect(trackGain);
-                source.start(stepTime, chop.start, playDur * rate);
+                source.start(stepTime, startSec, playDur * rate);
                 source.stop(stepTime + playDur + 0.005);
               }
             }

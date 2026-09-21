@@ -7,10 +7,22 @@
     <title>VX-CHOP · Sampler de Cortes</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Oswald:wght@500;700;900&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700;800&family=Oswald:wght@500;700;900&display=swap" rel="stylesheet">
     <script type="module" src="/src/main.jsx"></script>
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      if (window.location.protocol === 'file:') {
+        window.addEventListener('DOMContentLoaded', function() {
+          setTimeout(function() {
+            var root = document.getElementById('root');
+            if (root && root.children.length === 0) {
+              root.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#060d08;color:#00ff88;font-family:\'JetBrains Mono\',monospace;text-align:center;padding:24px;box-sizing:border-box;"><div style="font-size:36px;margin-bottom:12px;">🎛️ VX-CHOP MPC</div><div style="font-size:16px;color:#ffffff;margin-bottom:20px;">Para abrir la aplicación en tu navegador:</div><div style="background:#0c1811;border:1px solid #1a3c2a;border-radius:8px;padding:20px 28px;max-width:540px;text-align:left;color:#c0d0c5;font-size:13px;line-height:1.7;">1. Haz doble clic en el archivo <strong>▶ INICIAR_VX_CHOP.bat</strong> incluido en esta carpeta.<br/>2. O en tu terminal corre: <code style="color:#00e5ff;background:#040806;padding:2px 6px;border-radius:3px;">npm run dev</code>.<br/><br/><span style="font-size:11px;color:#889988;">(Los navegadores como Chrome y Edge bloquean la carga de Web Audio y módulos si se hace doble clic directo en archivos locales por políticas de seguridad).</span></div></div>';
+            }
+          }, 900);
+        });
+      }
+    </script>
   </body>
 </html>

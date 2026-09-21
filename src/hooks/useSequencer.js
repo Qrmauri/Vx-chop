@@ -84,7 +84,7 @@ const INITIAL_TRACKS = [
     muted: false,
     solo: false,
     customBuffer: null,
-    steps: Array.from({ length: DEFAULT_STEP_COUNT }, () => ({
+    steps: Array.from({ length: MAX_STEPS }, () => ({
       active: false,
       note: 0, // semitonos: 0 = C, 2 = D, etc.
       velocity: 1.0,
@@ -547,6 +547,73 @@ export function useSequencer({ audioContext, getAudioContext, getDestination, en
     );
   }, []);
 
+  const duplicatePattern = useCallback(() => {
+    setTracks((prev) =>
+      prev.map((t) => {
+        const sc = stepCountRef.current;
+        const newSteps = [...t.steps];
+        for (let i = 0; i < sc; i++) {
+          if (i + sc < MAX_STEPS) {
+            newSteps[i + sc] = { ...newSteps[i] };
+          }
+        }
+        return { ...t, steps: newSteps };
+      }),
+    );
+    const nextCount = stepCountRef.current === 16 ? 32 : 64;
+    setStepCount(nextCount);
+  }, [setStepCount]);
+
+  const transposeTrack = useCallback((trackId, semitones) => {
+    setTracks((prev) =>
+      prev.map((t) => {
+        if (t.id !== trackId) return t;
+        const newSteps = t.steps.map((s) => {
+          if (!s.active) return s;
+          if (t.type === 'bass') {
+            const nextNote = Math.max(-12, Math.min(24, (s.note || 0) + semitones));
+            return { ...s, note: nextNote };
+          }
+          if (t.type === 'chop' && chopsRef.current.length > 0) {
+            const nextChop = Math.max(0, Math.min(chopsRef.current.length - 1, (s.chopIndex || 0) + semitones));
+            return { ...s, chopIndex: nextChop };
+          }
+          return s;
+        });
+        return { ...t, steps: newSteps };
+      }),
+    );
+  }, []);
+
+  const nudgeTrack = useCallback((trackId, direction = 1) => {
+    setTracks((prev) =>
+      prev.map((t) => {
+        if (t.id !== trackId) return t;
+        const sc = stepCountRef.current;
+        const activePart = t.steps.slice(0, sc);
+        const nudged = Array.from({ length: sc }, (_, i) => {
+          const srcIdx = (i - direction + sc) % sc;
+          return { ...activePart[srcIdx] };
+        });
+        const newSteps = [...t.steps];
+        for (let i = 0; i < sc; i++) {
+          newSteps[i] = nudged[i];
+        }
+        return { ...t, steps: newSteps };
+      }),
+    );
+  }, []);
+
+  const clearTrack = useCallback((trackId) => {
+    setTracks((prev) =>
+      prev.map((t) =>
+        t.id === trackId
+          ? { ...t, steps: t.steps.map((s) => ({ ...s, active: false })) }
+          : t,
+      ),
+    );
+  }, []);
+
   // Cleanup al desmontar
   useEffect(() => () => {
     if (timerIdRef.current) {
@@ -583,5 +650,11 @@ export function useSequencer({ audioContext, getAudioContext, getDestination, en
     loadCustomSample,
     applyPreset,
     clearAll,
+    clearTrack,
+    duplicatePattern,
+    transposeTrack,
+    nudgeTrack,
+    getActiveCtx,
+    getDestination,
   };
 }

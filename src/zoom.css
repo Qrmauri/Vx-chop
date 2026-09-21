@@ -1,1 +1,0 @@
-.zoom-selected{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:18px;padding:10px 14px;border:1px solid var(--border);border-radius:8px;background:rgba(16,38,49,.78);color:var(--muted);font-size:11px}@media(max-width:520px){.zoom-selected{align-items:stretch;flex-direction:column}}

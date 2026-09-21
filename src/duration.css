@@ -1,4 +1,0 @@
-.duration-bar{display:flex;align-items:center;gap:10px;margin-top:8px}
-.duration-current,.duration-total{min-width:56px;font-size:11px;color:var(--lime);text-align:center}
-.duration-track{position:relative;flex:1;height:6px;border-radius:3px;background:#0c2026;border:1px solid var(--border);overflow:hidden}
-.duration-fill{position:absolute;left:0;top:0;bottom:0;width:0%;background:linear-gradient(90deg,var(--lime),var(--mint));transition:width .05s linear}

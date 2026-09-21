@@ -7,13 +7,16 @@
     "build:wasm": "asc src/wasm/dsp.ts -o public/dsp.wasm --optimize --noAssert --runtime stub",
     "dev": "npm run build:wasm && vite",
     "build": "npm run build:wasm && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "tauri": "tauri"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.11.5",
     "@vitejs/plugin-react": "^4.3.4",
     "assemblyscript": "^0.28.20",
     "vite": "^6.3.5"

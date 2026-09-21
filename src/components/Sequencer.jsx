@@ -1,5 +1,7 @@
 import { useRef, useState } from 'react';
 import { exportFullBeatToWav } from '../utils/exportBeat.js';
+import PianoRoll from './PianoRoll.jsx';
+import { playBass } from '../utils/drumSynth.js';
 
 const SEMITONE_NOTES = [
   { val: -12, label: 'C-1' }, { val: -11, label: 'C#-1' }, { val: -10, label: 'D-1' },
@@ -51,16 +53,43 @@ export default function Sequencer({
     loadCustomSample,
     applyPreset,
     clearAll,
+    clearTrack,
+    duplicatePattern,
+    transposeTrack,
+    nudgeTrack,
+    getActiveCtx,
+    getDestination,
   } = sequencer;
 
   // Estado para el popover de edición de notas/chops/velocity y exportación
+  const [viewMode, setViewMode] = useState('tracks'); // 'tracks' | 'pianoroll'
   const [editingStep, setEditingStep] = useState(null); // { trackId, stepIdx, type }
   const [isExporting, setIsExporting] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportBars, setExportBars] = useState(4); // 2, 4, 8, 16, 32 loops
   const [exportMastering, setExportMastering] = useState(true);
   const [velocityEdit, setVelocityEdit] = useState(null); // { trackId, stepIdx }
+  const [selectedTrackId, setSelectedTrackId] = useState('bass');
+  const [showVelocityLane, setShowVelocityLane] = useState(true);
   const fileInputRef = useRef({});
+
+  // Preescucha de notas para el Piano Roll
+  const handlePreviewNote = (track, noteVal) => {
+    try {
+      const ctx = getActiveCtx ? getActiveCtx() : null;
+      if (!ctx) return;
+      const dest = getDestination ? getDestination() : ctx.destination;
+      if (track.type === 'bass') {
+        playBass(ctx, dest, ctx.currentTime, 1.0, noteVal);
+      } else if (track.type === 'chop') {
+        if (onHitPad && chops[noteVal]) {
+          onHitPad(chops[noteVal]);
+        }
+      }
+    } catch (err) {
+      console.warn('Error en preescucha de nota:', err);
+    }
+  };
 
   const handleExportBeat = async () => {
     setIsExporting(true);
@@ -269,8 +298,44 @@ export default function Sequencer({
       </div>
 
 
-      {/* ── Matriz de Pistas y Pasos ─────────────────────────────────────── */}
-      <div className="seq-grid-wrap" style={{ '--seq-cols': stepCount }}>
+      {/* Selector de Modo: Pistas vs Piano Roll */}
+      <div className="seq-view-selector-bar">
+        <button
+          type="button"
+          className={`seq-view-tab-btn ${viewMode === 'tracks' ? 'active' : ''}`}
+          onClick={() => setViewMode('tracks')}
+        >
+          🥁 VISTA DE PISTAS (DRUM GRID)
+        </button>
+        <button
+          type="button"
+          className={`seq-view-tab-btn ${viewMode === 'pianoroll' ? 'active' : ''}`}
+          onClick={() => setViewMode('pianoroll')}
+        >
+          🎹 PIANO ROLL (DIBUJAR NOTAS MIDI)
+        </button>
+      </div>
+
+      {viewMode === 'pianoroll' ? (
+        <PianoRoll
+          tracks={tracks}
+          selectedTrackId={selectedTrackId}
+          onSelectTrack={setSelectedTrackId}
+          currentStep={currentStep}
+          stepCount={stepCount}
+          isPlaying={isPlaying}
+          toggleStep={toggleStep}
+          setStepNote={setStepNote}
+          setStepChop={setStepChop}
+          setStepVelocity={setStepVelocity}
+          transposeTrack={transposeTrack}
+          clearTrack={clearTrack}
+          chops={chops}
+          onPreviewNote={handlePreviewNote}
+        />
+      ) : (
+        /* ── Matriz de Pistas y Pasos ─────────────────────────────────────── */
+        <div className="seq-grid-wrap" style={{ '--seq-cols': stepCount }}>
 
         {/* Marcador de compases superiores (1, 2, 3, 4) */}
         <div className="seq-beats-header">
@@ -392,11 +457,131 @@ export default function Sequencer({
           ))}
         </div>
 
+        {/* ── Carril Inferior de Velocity (Inspirado en Pantalla Táctil MPC ONE) ────── */}
+        {showVelocityLane && (
+          <div className="seq-vel-lane">
+            <div className="seq-vel-lane-header">
+              <div className="seq-vel-lane-title">
+                <span className="vel-icon">🎚</span> VELOCITY
+              </div>
+              <select
+                className="seq-vel-track-select"
+                value={selectedTrackId}
+                onChange={(e) => setSelectedTrackId(e.target.value)}
+                title="Seleccionar pista para ver y editar velocity"
+              >
+                {tracks.map((t) => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="seq-vel-lane-grid" style={{ gridTemplateColumns: `repeat(${stepCount}, 1fr)` }}>
+              {(() => {
+                const curTrack = tracks.find((t) => t.id === selectedTrackId) || tracks[0];
+                return curTrack.steps.slice(0, stepCount).map((step, idx) => {
+                  const isPlayhead = currentStep === idx && isPlaying;
+                  const pct = step.active ? Math.round((step.velocity || 1.0) * 100) : 0;
+
+                  return (
+                    <div
+                      key={idx}
+                      className={`seq-vel-col ${step.active ? 'active' : ''} ${isPlayhead ? 'playhead' : ''}`}
+                      title={step.active ? `Paso #${idx + 1}: ${pct}% Velocity (Clic para editar)` : `Paso #${idx + 1}: Inactivo`}
+                      onClick={() => {
+                        if (step.active) {
+                          setEditingStep({ trackId: curTrack.id, stepIdx: idx, type: curTrack.type });
+                        } else {
+                          toggleStep(curTrack.id, idx);
+                        }
+                      }}
+                    >
+                      <div
+                        className="seq-vel-stem"
+                        style={{
+                          height: `${pct}%`,
+                          backgroundColor: curTrack.color || 'var(--accent)',
+                        }}
+                      />
+                      <span className="seq-vel-label">
+                        {step.active ? `${pct}` : ''}
+                      </span>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+          </div>
+        )}
+
+        {/* ── Barra de Herramientas Estilo Pantalla MPC ONE ───────────────── */}
+        <div className="seq-screen-tools">
+          <div className="seq-screen-counter">
+            <span className="seq-counter-label">BAR : BEAT : TICK</span>
+            <span className="seq-counter-val">
+              {Math.floor(currentStep / 4) + 1} : {(currentStep % 4) + 1} : 0
+            </span>
+          </div>
+
+          <div className="seq-screen-buttons">
+            <button
+              className={`seq-screen-btn ${showVelocityLane ? 'active' : ''}`}
+              onClick={() => setShowVelocityLane((v) => !v)}
+              title="Mostrar / Ocultar carril inferior de Velocity"
+            >
+              {showVelocityLane ? '▼ VELOCITY' : '▲ VELOCITY'}
+            </button>
+            <button
+              className="seq-screen-btn accent"
+              onClick={duplicatePattern}
+              title="DOUBLE: Duplica el patrón (16 -> 32 compases, o 32 -> 64)"
+            >
+              2X DOUBLE
+            </button>
+            <button
+              className="seq-screen-btn"
+              onClick={() => nudgeTrack(selectedTrackId, -1)}
+              title="NUDGE ◀: Desplaza las notas de la pista hacia la izquierda (micro-groove)"
+            >
+              ◀ NUDGE
+            </button>
+            <button
+              className="seq-screen-btn"
+              onClick={() => nudgeTrack(selectedTrackId, 1)}
+              title="NUDGE ▶: Desplaza las notas de la pista hacia la derecha (micro-groove)"
+            >
+              NUDGE ▶
+            </button>
+            <button
+              className="seq-screen-btn"
+              onClick={() => transposeTrack(selectedTrackId, -1)}
+              title="TRANS -1: Baja un semitono la pista seleccionada"
+            >
+              ♭ TRANS -1
+            </button>
+            <button
+              className="seq-screen-btn"
+              onClick={() => transposeTrack(selectedTrackId, 1)}
+              title="TRANS +1: Sube un semitono la pista seleccionada"
+            >
+              ♯ TRANS +1
+            </button>
+            <button
+              className="seq-screen-btn danger"
+              onClick={() => clearTrack(selectedTrackId)}
+              title="Limpiar notas de la pista seleccionada"
+            >
+              🗑️ Limpiar Pista
+            </button>
+          </div>
+        </div>
+
       </div>
+      )}
 
       {/* ── Pie con Atajos y Guía ────────────────────────────────────────── */}
       <div className="seq-footer-hint">
-        💡 <strong>Tip:</strong> Haz clic derecho en cualquier paso activo para editar nota, slice o <strong>velocity</strong>. Mantén <strong>NOTE REPEAT</strong> para repetir al tempo.
+        💡 <strong>Tip:</strong> Haz clic derecho en cualquier paso activo para editar nota, slice o <strong>velocity</strong>. Mantén <strong>NOTE REPEAT</strong> para repetir al tempo. Usa <strong>DOUBLE</strong> para duplicar de 16 a 32 compases.
       </div>
 
 
