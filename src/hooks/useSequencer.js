@@ -10,23 +10,32 @@ import {
 const DEFAULT_STEP_COUNT = 16;
 const MAX_STEPS = 64;
 
-const INITIAL_TRACKS = [
-  {
-    id: 'chops',
-    name: 'Sample Chops',
-    color: '#55d6be',
-    type: 'chop',
-    volume: 0.9,
-    muted: false,
-    solo: false,
-    customBuffer: null,
-    steps: Array.from({ length: MAX_STEPS }, () => ({
-      active: false,
-      note: 0,
-      velocity: 1.0,
-      chopIndex: 0,
-    })),
-  },
+const PAD_TRACK_COLORS = [
+  '#ff3b30', '#ff4d5a', '#ff6b4a', '#ff8533', // Fila 1: Kick / Bombo
+  '#ffa62b', '#ffb703', '#ffd166', '#e0ca3c', // Fila 2: Snare / Caja
+  '#00e5ff', '#00d4ff', '#00b4d8', '#0096c7', // Fila 3: Hi-Hats
+  '#b5179e', '#7209b7', '#560bad', '#480ca8', // Fila 4: Chops / Melodía
+];
+
+const INITIAL_PAD_TRACKS = Array.from({ length: 16 }, (_, i) => ({
+  id: `pad-${i}`,
+  padIndex: i,
+  name: `Pad ${i + 1}`,
+  color: PAD_TRACK_COLORS[i],
+  type: 'pad',
+  volume: 0.9,
+  muted: false,
+  solo: false,
+  customBuffer: null,
+  steps: Array.from({ length: MAX_STEPS }, () => ({
+    active: false,
+    note: 0,
+    velocity: 1.0,
+    chopIndex: i,
+  })),
+}));
+
+const INITIAL_DRUM_TRACKS = [
   {
     id: 'kick',
     name: 'Bombo / Kick',
@@ -93,11 +102,13 @@ const INITIAL_TRACKS = [
   },
 ];
 
+const INITIAL_TRACKS = [...INITIAL_PAD_TRACKS, ...INITIAL_DRUM_TRACKS];
+
 /**
  * Hook del Secuenciador de Patrones Multi-Pista.
  * Implementa Lookahead Web Audio Scheduler para sincronización sin jitter.
  */
-export function useSequencer({ audioContext, getAudioContext, getDestination, ensureInit, chops = [], bpm = 90, playMode = 'mono', playChop } = {}) {
+export function useSequencer({ audioContext, getAudioContext, getDestination, ensureInit, chops = [], bpm = 90, playMode = 'mono', playChop, onKickTrigger } = {}) {
   const [tracks, setTracks] = useState(INITIAL_TRACKS);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -137,6 +148,7 @@ export function useSequencer({ audioContext, getAudioContext, getDestination, en
   const noteRepeatRef = useRef(false);
   const noteRepeatTimerRef = useRef(null);
   const getDestinationRef = useRef(getDestination);
+  const onKickTriggerRef = useRef(onKickTrigger);
 
   useEffect(() => { tracksRef.current = tracks; }, [tracks]);
   useEffect(() => { chopsRef.current = chops; }, [chops]);
@@ -149,6 +161,28 @@ export function useSequencer({ audioContext, getAudioContext, getDestination, en
   useEffect(() => { noteRepeatRef.current = noteRepeat; }, [noteRepeat]);
   useEffect(() => { stepCountRef.current = stepCount; }, [stepCount]);
   useEffect(() => { getDestinationRef.current = getDestination; }, [getDestination]);
+  useEffect(() => { onKickTriggerRef.current = onKickTrigger; }, [onKickTrigger]);
+
+  // Sincronizar dinámicamente nombres y colores de las 16 pistas de pads según los chops cargados
+  useEffect(() => {
+    if (!chops || chops.length === 0) return;
+    setTracks((prev) => {
+      let changed = false;
+      const next = prev.map((t) => {
+        if (t.type === 'pad' && typeof t.padIndex === 'number') {
+          const chop = chops[t.padIndex];
+          const newName = chop?.name || `Pad ${t.padIndex + 1}`;
+          const newColor = chop?.color || t.color;
+          if (t.name !== newName || (chop?.color && t.color !== newColor)) {
+            changed = true;
+            return { ...t, name: newName, color: newColor };
+          }
+        }
+        return t;
+      });
+      return changed ? next : prev;
+    });
+  }, [chops]);
 
   // Duración de un paso de semicorchea (16th note) en segundos
   const getStepDuration = () => (60 / (bpmRef.current || 90)) / 4;
@@ -199,6 +233,9 @@ export function useSequencer({ audioContext, getAudioContext, getDestination, en
       switch (track.type) {
         case 'kick':
           playKick(ctx, trackGain, actualTime, vel);
+          if (onKickTriggerRef.current) {
+            onKickTriggerRef.current(actualTime);
+          }
           break;
         case 'snare':
           playSnare(ctx, trackGain, actualTime, vel);
@@ -209,6 +246,22 @@ export function useSequencer({ audioContext, getAudioContext, getDestination, en
         case 'bass':
           playBass(ctx, trackGain, actualTime, vel, note);
           break;
+        case 'pad': {
+          const availableChops = chopsRef.current;
+          const padIdx = typeof track.padIndex === 'number' ? track.padIndex : (stepData.chopIndex || 0);
+          const targetChop = availableChops[padIdx];
+          if (targetChop && playChopRef.current) {
+            const delayMs = Math.max(0, (actualTime - ctx.currentTime) * 1000);
+            setTimeout(() => {
+              playChopRef.current(targetChop, {
+                cancelSequence: playModeRef.current ? playModeRef.current === 'mono' : false,
+                velocity: vel,
+                chokeGroup: targetChop.chokeGroup ?? 1,
+              });
+            }, delayMs);
+          }
+          break;
+        }
         case 'chop': {
           const availableChops = chopsRef.current;
           if (availableChops.length > 0) {
@@ -309,34 +362,53 @@ export function useSequencer({ audioContext, getAudioContext, getDestination, en
     });
   }, [play]);
 
-  const recordHit = useCallback(({ trackId = 'chops', chopIndex = 0, note = 0, velocity = 1.0 } = {}) => {
+  const recordHit = useCallback((arg1 = {}, maybeVelocity = 1.0) => {
     if (!isPlayingRef.current || !isRecordingRef.current) return;
     const ctx = getActiveCtx();
     if (!ctx) return;
 
+    let targetTrackId = null;
+    let velocity = 1.0;
+    let note = 0;
+    let padIndex = 0;
+
+    if (arg1 && typeof arg1 === 'object') {
+      if ('padIndex' in arg1 || 'trackId' in arg1) {
+        targetTrackId = arg1.trackId || (typeof arg1.padIndex === 'number' ? `pad-${arg1.padIndex}` : 'pad-0');
+        velocity = arg1.velocity ?? 1.0;
+        note = arg1.note ?? 0;
+        padIndex = arg1.padIndex ?? 0;
+      } else if ('id' in arg1) {
+        const foundIdx = chopsRef.current.findIndex((c) => c && c.id === arg1.id);
+        targetTrackId = foundIdx >= 0 ? `pad-${foundIdx}` : 'pad-0';
+        velocity = typeof maybeVelocity === 'number' ? maybeVelocity : 1.0;
+        padIndex = foundIdx >= 0 ? foundIdx : 0;
+      }
+    }
+
+    if (!targetTrackId) targetTrackId = 'pad-0';
+
     const stepDuration = getStepDuration();
-    // Cuantización: 1/4 = cada 4 pasos, 1/8 = cada 2, 1/16 = cada paso, 1/32 = subdivisión
     const quantizeRes = quantizeRef.current || 16;
-    const quantizeSteps = 16 / quantizeRes; // factores de paso
+    const quantizeSteps = 16 / quantizeRes;
     const sc = stepCountRef.current;
     const loopDuration = stepDuration * sc;
     const now = ctx.currentTime;
     let elapsed = (now - loopStartAudioTimeRef.current) % loopDuration;
     if (elapsed < 0) elapsed += loopDuration;
     const rawStep = elapsed / stepDuration;
-    // Cuantizar al grid elegido
     const gridStep = Math.round(rawStep / quantizeSteps) * quantizeSteps;
     const quantizedStep = Math.round(gridStep) % sc;
 
     setTracks((prev) =>
       prev.map((t) => {
-        if (t.id !== trackId) return t;
+        if (t.id !== targetTrackId) return t;
         const newSteps = [...t.steps];
         newSteps[quantizedStep] = {
           active: true,
           note,
           velocity,
-          chopIndex,
+          chopIndex: padIndex,
         };
         return { ...t, steps: newSteps };
       }),

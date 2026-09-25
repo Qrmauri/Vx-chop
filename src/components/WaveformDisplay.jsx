@@ -18,55 +18,31 @@ export default function WaveformDisplay({
   handlePointerDown,
   handlePointerMove,
   handlePointerUp,
+  hasAudio = false,
+  onTriggerLoadAudio,
+  onBatchDrop,
 }) {
   return (
-    <div className="left-card">
-      <div className="card-title-row">
-        <span className="card-title">Waveform Display</span>
-        <span style={{ fontSize: 9.5, color: 'var(--accent)' }}>
-          {selectedChop
-            ? `● ${selectedChop.name} (${formatTime(selectedChop.end - selectedChop.start)})`
-            : 'Arrastra sobre la onda para cortar'}
-        </span>
-      </div>
-
-      <div className="mpc-screen">
-        <div className="screen-top">
-          <span>{selectedChop ? selectedChop.name : 'VISTA GENERAL'}</span>
-          <span>{formatTime(audioDuration || 0)}</span>
+    <div className="left-card waveform-compact-card">
+      {/* Barra de Título & Zoom Integrada */}
+      <div className="card-title-row waveform-header-row">
+        <div className="waveform-title-group">
+          <span className="card-title">FORMA DE ONDA</span>
+          <span className="waveform-selected-tag">
+            {selectedChop
+              ? `● ${selectedChop.name} (${formatTime(selectedChop.end - selectedChop.start)})`
+              : hasAudio
+              ? `${chopsCount} cortes · Arrastra sobre la onda para cortar`
+              : 'Esperando audio para muestrear'}
+          </span>
         </div>
 
-        <div className="screen-canvas-wrap">
-          <canvas
-            ref={canvasRef}
-            onPointerDown={handlePointerDown}
-            onPointerMove={handlePointerMove}
-            onPointerUp={handlePointerUp}
-            onPointerCancel={handlePointerUp}
-          />
-          <canvas ref={playheadCanvasRef} className="playhead-overlay" />
-        </div>
-
-        <div className="duration-bar">
-          <span ref={currentTimeLabelRef} className="duration-current">0:00.00</span>
-          <div className="duration-track">
-            <div ref={durationFillRef} className="duration-fill" />
-          </div>
-          <span ref={totalTimeLabelRef} className="duration-total">0:00.00</span>
-        </div>
-
-        <div className="screen-bottom">
-          <span>{chopsCount} cortes creados</span>
-          <span>Zoom: {Math.round(zoom * 100)}%</span>
-        </div>
-      </div>
-
-      {/* Controles de Zoom */}
-      <div className="zoom-strip">
-        <div className="zoom-steppers">
+        {/* Controles de Zoom en línea */}
+        <div className="zoom-steppers-inline">
           <button
             type="button"
             className="mpc-btn zoom-btn"
+            disabled={!hasAudio}
             onClick={() => setZoom((z) => Math.max(1, z / 1.5))}
             title="Alejar zoom (-)"
           >
@@ -76,6 +52,7 @@ export default function WaveformDisplay({
           <button
             type="button"
             className="mpc-btn zoom-btn"
+            disabled={!hasAudio}
             onClick={() => setZoom((z) => Math.min(20, z * 1.5))}
             title="Acercar zoom (+)"
           >
@@ -84,32 +61,102 @@ export default function WaveformDisplay({
           <button
             type="button"
             className="mpc-btn zoom-btn rst"
+            disabled={!hasAudio}
             onClick={() => { setZoom(1); setViewStart(0); }}
-            title="Restablecer zoom a vista completa (100%)"
+            title="Restablecer vista completa (100%)"
           >
             100%
           </button>
+          <button
+            type="button"
+            className="mpc-btn zoom-focus-btn"
+            disabled={!selectedChop}
+            onClick={() => selectedChop && zoomToChop(selectedChop)}
+            title="Enfocar en el corte seleccionado"
+          >
+            ⊙ Enfocar
+          </button>
         </div>
-        <button
-          type="button"
-          className="mpc-btn zoom-focus-btn"
-          disabled={!selectedChop}
-          onClick={() => selectedChop && zoomToChop(selectedChop)}
-          title="Enfocar forma de onda en el corte seleccionado"
-        >
-          ⊙ Enfocar corte
-        </button>
       </div>
 
-      {/* Mini Analizador de Espectro integrado */}
-      <div style={{ marginTop: 10 }}>
-        <div style={{ fontSize: 7.5, color: 'var(--muted)', letterSpacing: '0.2em', textTransform: 'uppercase', marginBottom: 4 }}>
-          Espectro en tiempo real
+      {/* Pantalla LCD de la Onda */}
+      <div className="mpc-screen">
+        <div
+          className="screen-canvas-wrap"
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault();
+            if (onBatchDrop) onBatchDrop(e);
+          }}
+        >
+          <canvas
+            ref={canvasRef}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
+          />
+          <canvas ref={playheadCanvasRef} className="playhead-overlay" />
+
+          {/* Hero State táctil cuando no hay audio cargado */}
+          {!hasAudio && (
+            <div
+              className="waveform-hero-empty"
+              onClick={onTriggerLoadAudio}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') onTriggerLoadAudio?.();
+              }}
+              title="Haz clic o arrastra un archivo de audio para comenzar a cortar"
+            >
+              <div className="hero-oscilloscope-grid" />
+              <div className="waveform-hero-content">
+                <div className="hero-wave-icon">
+                  <svg viewBox="0 0 160 36" className="hero-wave-svg" fill="none">
+                    <path
+                      d="M 4 18 Q 20 18, 30 18 T 42 7 T 50 29 T 58 4 T 66 32 T 74 12 T 80 24 T 88 1 T 96 35 T 104 14 T 112 22 T 120 9 T 128 27 T 138 18 L 156 18"
+                      stroke="currentColor"
+                      strokeWidth="2.2"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                </div>
+                <div className="waveform-hero-title">ARRASTRA TU SAMPLE AQUÍ</div>
+                <div className="waveform-hero-sub">
+                  WAV · MP3 · FLAC · OGG · AIFF · 32-bit Float
+                </div>
+                <button
+                  type="button"
+                  className="waveform-hero-cta"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (onTriggerLoadAudio) onTriggerLoadAudio();
+                  }}
+                >
+                  <span className="hero-cta-icon">📂</span> Explorar y Cargar Audio
+                </button>
+              </div>
+            </div>
+          )}
         </div>
-        <canvas
-          ref={spectrumCanvasRef}
-          style={{ display: 'block', width: '100%', height: 40, borderRadius: 4, background: '#05100a' }}
-        />
+
+        {/* Barra de Progreso y Tiempo Serato */}
+        <div className="duration-bar">
+          <span ref={currentTimeLabelRef} className="duration-current">0:00.00</span>
+          <div className="duration-track">
+            <div ref={durationFillRef} className="duration-fill" />
+          </div>
+          <span ref={totalTimeLabelRef} className="duration-total">{formatTime(audioDuration || 0)}</span>
+        </div>
+
+        {/* Mini Analizador de Espectro Integrado */}
+        <div className="spectrum-integrated-wrap">
+          <canvas
+            ref={spectrumCanvasRef}
+            className="spectrum-integrated-canvas"
+          />
+        </div>
       </div>
     </div>
   );

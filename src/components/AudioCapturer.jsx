@@ -1,14 +1,26 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 
+async function invokeTauri(cmd, args) {
+  if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__?.invoke) {
+    return window.__TAURI_INTERNALS__.invoke(cmd, args);
+  }
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke(cmd, args);
+  } catch (err) {
+    throw new Error('Tauri no disponible en este entorno');
+  }
+}
+
 /**
  * AudioCapturer - Muestreador / Grabador de Audio en Vivo
  * Captura audio digital en tiempo real de YouTube / Pestañas del navegador o Micrófono / Interfaz,
- * y lo envía directamente como AudioBuffer a la MPC para cortar y afinar.
+ * y soporte nativo de Windows WASAPI Loopback 32-bit con Tauri v2.
  */
 export default function AudioCapturer({ onAudioCaptured, onAutoPlayYouTube }) {
   const [isRecording, setIsRecording] = useState(false);
   const [recordDuration, setRecordDuration] = useState(0);
-  const [sourceType, setSourceType] = useState('tab'); // 'tab' | 'mic'
+  const [sourceType, setSourceType] = useState('tab'); // 'tab' | 'mic' | 'wasapi'
   const [vuLevel, setVuLevel] = useState(0);
   const [statusMsg, setStatusMsg] = useState('');
 
@@ -56,6 +68,34 @@ export default function AudioCapturer({ onAudioCaptured, onAutoPlayYouTube }) {
     setSourceType(type);
     setStatusMsg('');
     chunksRef.current = [];
+
+    // ── MODO WASAPI LOOPBACK NATIVO (Windows / Tauri) ──
+    if (type === 'wasapi') {
+      const isTauriEnv = typeof window !== 'undefined' && Boolean(window.__TAURI_INTERNALS__ || window.__TAURI__);
+      if (!isTauriEnv) {
+        alert(
+          '💻 Captura Nativa WASAPI:\n\n' +
+          'La grabación directa del audio del sistema Windows (Spotify, YouTube, juegos) sin cables virtuales se ejecuta dentro de la app de escritorio VX-CHOP (Tauri v2).\n\n' +
+          'En el navegador web, usa el botón "Grabar Audio YouTube" o "Mic / Entrada".'
+        );
+        return;
+      }
+      try {
+        await invokeTauri('start_wasapi_capture');
+        setIsRecording(true);
+        setRecordDuration(0);
+        setStatusMsg('● Capturando audio nativo de Windows (WASAPI Loopback 32-bit)...');
+        const startTime = performance.now();
+        timerRef.current = setInterval(() => {
+          setRecordDuration((performance.now() - startTime) / 1000);
+        }, 100);
+        return;
+      } catch (err) {
+        alert('Error al iniciar captura WASAPI: ' + err);
+        setIsRecording(false);
+        return;
+      }
+    }
 
     try {
       let stream = null;
@@ -222,7 +262,38 @@ export default function AudioCapturer({ onAudioCaptured, onAutoPlayYouTube }) {
     }
   };
 
-  const stopRecording = () => {
+  const stopRecording = async () => {
+    if (sourceType === 'wasapi') {
+      if (timerRef.current) clearInterval(timerRef.current);
+      setIsRecording(false);
+      setStatusMsg('⏳ Decodificando audio WASAPI 32-bit de Windows...');
+      try {
+        const b64Wav = await invokeTauri('stop_wasapi_capture');
+        const binaryStr = atob(b64Wav);
+        const len = binaryStr.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+          bytes[i] = binaryStr.charCodeAt(i);
+        }
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        const decodeCtx = new AudioContextClass();
+        const decoded = await decodeCtx.decodeAudioData(bytes.buffer);
+        decodeCtx.close().catch(() => {});
+
+        if (onAudioCaptured) {
+          onAudioCaptured(decoded, 'Muestra Windows WASAPI 32-bit');
+        }
+        setStatusMsg('¡Audio de Windows capturado a 32-bit y cargado en MPC!');
+        setTimeout(() => setStatusMsg(''), 4000);
+      } catch (err) {
+        console.error('[AudioCapturer] Error al detener WASAPI:', err);
+        setStatusMsg('Error al procesar audio de Windows');
+      } finally {
+        setRecordDuration(0);
+      }
+      return;
+    }
+
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.stop();
     }
@@ -267,6 +338,14 @@ export default function AudioCapturer({ onAudioCaptured, onAutoPlayYouTube }) {
               title="Graba desde tu micrófono, tocadiscos o interfaz de audio conectada a tu PC"
             >
               🎤 Mic / Entrada
+            </button>
+
+            <button
+              className="mpc-btn small rec-wasapi-btn"
+              onClick={() => startRecording('wasapi')}
+              title="💻 WASAPI LOOPBACK: Captura nativa a 32-bit del audio del sistema Windows (Spotify, juegos, navegador) sin cables virtuales"
+            >
+              🪟 Windows (WASAPI)
             </button>
           </div>
         ) : (

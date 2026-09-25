@@ -7,6 +7,7 @@ import { useMidi } from './hooks/useMidi.js';
 import MpcHeader from './components/MpcHeader.jsx';
 import WaveformDisplay from './components/WaveformDisplay.jsx';
 import QLinkPanel from './components/QLinkPanel.jsx';
+import RackFxPanel from './components/RackFxPanel.jsx';
 import SelectedPadPanel from './components/SelectedPadPanel.jsx';
 import PadMatrix from './components/PadMatrix.jsx';
 import { formatTime } from './utils/format.js';
@@ -16,6 +17,22 @@ import { exportProjectToJson, importProjectFromJson } from './utils/projectStora
 import { extractAudioFilesFromDataTransfer, combineAudioFilesIntoKit } from './utils/folderDrop.js';
 import { loadCachedSample, saveCachedSample, clearCachedSample } from './utils/audioStorage.js';
 import { audioBufferToWavArrayBuffer } from './utils/export.js';
+import { detectTransients } from './utils/transientDetector.js';
+import {
+  IconBolt,
+  IconDice,
+  IconPlay,
+  IconStop,
+  IconTape,
+  IconRecord,
+  IconUndo,
+  IconRedo,
+  IconShuffle,
+  IconVideo,
+  IconList,
+  IconTrash,
+  IconCross,
+} from './components/Icons.jsx';
 
 // ── Constantes ────────────────────────────────────────────────────────────────
 
@@ -110,6 +127,7 @@ function renderWaveform(canvas, { buffer, chops, selectedId, zoom, viewStart, dr
 
   if (Array.isArray(chops)) {
     chops.forEach((c) => {
+      if (!c) return;
       const x = toX(c.start);
       const cw = Math.max(1, ((c.end - c.start) / visible) * w);
       ctx.fillStyle = `${c.color || '#00cc66'}28`;
@@ -264,6 +282,7 @@ export default function App() {
   const playheadCanvasRef = useRef(null);
   const spectrumCanvasRef = useRef(null);
   const projectInputRef   = useRef(null);
+  const mainAudioInputRef = useRef(null);
 
   const vuFillRef           = useRef(null);
   const noteNameRef         = useRef(null);
@@ -292,6 +311,7 @@ export default function App() {
   const [zoom,        setZoom]       = useState(1);
   const [viewStart,   setViewStart]  = useState(0);
   const [bank,        setBank]       = useState('A');
+  const [transientSensitivity, setTransientSensitivity] = useState('medium');
   const [playingId,     setPlayingId]    = useState(null);
   const [playMode,      setPlayMode]     = useState('mono');
   const [mobileTab,     setMobileTab]    = useState('pads');
@@ -299,6 +319,8 @@ export default function App() {
     typeof window !== 'undefined' && window.innerWidth <= 860 ? 'pads' : 'studio'
   ));
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
+  const [showYouTubeDrawer, setShowYouTubeDrawer] = useState(false);
+  const [showChopListDrawer, setShowChopListDrawer] = useState(false);
   const ytPlayerRef     = useRef(null);
   const ytCurrentTimeRef = useRef(0);
 
@@ -308,6 +330,7 @@ export default function App() {
   const [padMuteMode,   setPadMuteMode]   = useState(false);
   const [mutedPads,     setMutedPads]     = useState(new Set());
   const [showQLink,     setShowQLink]     = useState(false);
+  const [showRackFx,    setShowRackFx]    = useState(false);
   const [isLiveChopMode, setIsLiveChopMode] = useState(false);
   const [isExportingKit, setIsExportingKit] = useState(false);
   const [autoSliceEnabled, setAutoSliceEnabled] = useState(false);
@@ -447,6 +470,7 @@ export default function App() {
     bpm: bpm || 90,
     playMode,
     playChop: audio.playChop,
+    onKickTrigger: audio.triggerSidechainKick,
   });
 
   // Mirror refs
@@ -492,10 +516,20 @@ export default function App() {
       await audio.playChop(chop, { cancelSequence: false, velocity, pitchOffset });
     }
 
-    if (sequencer.isRecording) {
-      sequencer.recordHit(chop, velocity);
+    if (chop.name && /kick|bombo/i.test(chop.name)) {
+      audio.triggerSidechainKick();
     }
-  }, [padMuteMode, mutedPads, playMode, audio, sixteenLevels, sequencer]);
+
+    if (sequencer.isRecording) {
+      const padTarget = (padIdx !== null && padIdx >= 0) ? padIdx : chops.findIndex((c) => c && c.id === chop.id);
+      sequencer.recordHit({
+        trackId: padTarget >= 0 ? `pad-${padTarget}` : 'pad-0',
+        padIndex: padTarget >= 0 ? padTarget : 0,
+        chopIndex: padTarget >= 0 ? padTarget : 0,
+        velocity,
+      });
+    }
+  }, [padMuteMode, mutedPads, playMode, audio, sixteenLevels, sequencer, chops]);
 
   // Capturar corte al vuelo (Live Tap)
   const tapChopAtCurrentTime = useCallback((targetGlobalIndex) => {
@@ -512,7 +546,7 @@ export default function App() {
       const prev = lastTappedChopRef.current;
       setChopsWithHistory((prevChops) => {
         return prevChops.map((c) => {
-          if (c.id === prev.id) {
+          if (c && c.id === prev.id) {
             return { ...c, end: Math.max(c.start + MIN_CUT, nowSec) };
           }
           return c;
@@ -554,27 +588,47 @@ export default function App() {
     },
   });
 
-  // Funciones de dibujado de canvas
-  const doDrawWaveform = () => renderWaveform(canvasRef.current, {
-    buffer: audio.bufferRef.current,
-    chops,
-    selectedId,
-    zoom,
-    viewStart,
-    drag: dragRef.current,
-  });
+  // Funciones de dibujado de canvas dinámico (Buffer del pad seleccionado o buffer global)
+  const lastSelectedBufferRef = useRef(null);
 
-  const doDrawPlayhead = () => renderPlayhead(playheadCanvasRef.current, {
-    time: playheadTimeRef.current,
-    buffer: audio.bufferRef.current,
-    zoom: zoomRef.current,
-    viewStart: viewStartRef.current,
-  });
+  const doDrawWaveform = () => {
+    const curChop = chopsRef.current.find((c) => c && c.id === selectedIdRef.current);
+    const curBuffer = curChop?.buffer || audio.bufferRef.current;
+    const isSingleChopBuffer = Boolean(curChop?.buffer);
+    const chopsToDraw = isSingleChopBuffer && curChop ? [curChop] : chopsRef.current;
+
+    renderWaveform(canvasRef.current, {
+      buffer: curBuffer,
+      chops: chopsToDraw,
+      selectedId: selectedIdRef.current,
+      zoom: zoomRef.current,
+      viewStart: viewStartRef.current,
+      drag: dragRef.current,
+    });
+  };
+
+  const doDrawPlayhead = () => {
+    const curChop = chopsRef.current.find((c) => c && c.id === selectedIdRef.current);
+    const curBuffer = curChop?.buffer || audio.bufferRef.current;
+    renderPlayhead(playheadCanvasRef.current, {
+      time: playheadTimeRef.current,
+      buffer: curBuffer,
+      zoom: zoomRef.current,
+      viewStart: viewStartRef.current,
+    });
+  };
 
   drawWaveformRef.current = doDrawWaveform;
   drawPlayheadRef.current = doDrawPlayhead;
 
   useEffect(() => {
+    const curChop = chops.find((c) => c && c.id === selectedId);
+    const curBuffer = curChop?.buffer || audio.buffer;
+    if (curBuffer && curBuffer !== lastSelectedBufferRef.current) {
+      lastSelectedBufferRef.current = curBuffer;
+      setZoom(1);
+      setViewStart(0);
+    }
     doDrawWaveform();
     doDrawPlayhead();
   }, [audio.buffer, chops, selectedId, zoom, viewStart, mobileTab, workspaceMode]);
@@ -602,6 +656,18 @@ export default function App() {
     };
   }, []);
 
+  // Prevenir cualquier desplazamiento horizontal residual (Layout Shift Guard)
+  useEffect(() => {
+    const resetScroll = () => {
+      window.scrollTo(0, 0);
+      if (document.body) document.body.scrollLeft = 0;
+      if (document.documentElement) document.documentElement.scrollLeft = 0;
+    };
+    resetScroll();
+    window.addEventListener('resize', resetScroll);
+    return () => window.removeEventListener('resize', resetScroll);
+  }, []);
+
   // Ciclo rAF continuo: spectrum + playhead + VU + pitch
   useEffect(() => {
     const tick = () => {
@@ -609,8 +675,9 @@ export default function App() {
 
       const state = audio.playbackStateRef.current;
       const ctx   = audio.audioContextRef.current;
-      const buf   = audio.bufferRef.current;
-      const refChop = state?.chop || chopsRef.current.find((c) => c.id === selectedIdRef.current);
+      const curChop = chopsRef.current.find((c) => c && c.id === selectedIdRef.current);
+      const buf   = curChop?.buffer || audio.bufferRef.current;
+      const refChop = state?.chop || curChop;
       const total = refChop ? refChop.end - refChop.start : (buf?.duration || 0);
 
       if (audio.isContinuousPlaying) {
@@ -811,8 +878,12 @@ export default function App() {
         e.preventDefault();
         if (audio.isContinuousPlaying) {
           audio.stopContinuous();
-        } else if (audio.bufferRef.current) {
-          audio.playContinuous(viewStartRef.current);
+        } else {
+          const curChop = chopsRef.current.find((c) => c && c.id === selectedIdRef.current);
+          const targetBuf = curChop?.buffer || audio.bufferRef.current;
+          if (targetBuf) {
+            audio.playContinuous(viewStartRef.current, targetBuf);
+          }
         }
         return;
       }
@@ -886,7 +957,8 @@ export default function App() {
     const canvas = canvasRef.current;
     if (!canvas) return 0;
     const rect = canvas.getBoundingClientRect();
-    const buf = audio.bufferRef.current;
+    const curChop = chopsRef.current.find((c) => c && c.id === selectedIdRef.current);
+    const buf = curChop?.buffer || audio.bufferRef.current;
     if (!rect.width || !buf || buf.duration <= 0) return 0;
     const visible = buf.duration / (zoomRef.current || 1);
     const clientX = e.clientX ?? (e.touches && e.touches[0]?.clientX) ?? 0;
@@ -895,16 +967,23 @@ export default function App() {
   };
 
   const handlePointerDown = (e) => {
-    if (!audio.bufferRef.current) return;
+    const curChop = chopsRef.current.find((c) => c && c.id === selectedIdRef.current);
+    const buf = curChop?.buffer || audio.bufferRef.current;
+    if (!buf) return;
     const t = canvasTime(e);
     const canvas = canvasRef.current;
     if (canvas) canvas.setPointerCapture(e.pointerId);
 
-    const visible = audio.bufferRef.current.duration / zoomRef.current;
+    const visible = buf.duration / zoomRef.current;
     const handleThreshold = visible * 0.025;
 
-    for (let i = chopsRef.current.length - 1; i >= 0; i--) {
-      const c = chopsRef.current[i];
+    const chopsToInspect = curChop?.buffer && curChop
+      ? [curChop]
+      : chopsRef.current;
+
+    for (let i = chopsToInspect.length - 1; i >= 0; i--) {
+      const c = chopsToInspect[i];
+      if (!c) continue;
       if (Math.abs(t - c.start) < handleThreshold) {
         dragRef.current = { mode: 'resize-start', chopId: c.id, initStart: c.start };
         setSelectedId(c.id);
@@ -917,7 +996,7 @@ export default function App() {
       }
     }
 
-    const clicked = chopsRef.current.find((c) => t >= c.start && t <= c.end);
+    const clicked = chopsToInspect.find((c) => c && t >= c.start && t <= c.end);
     if (clicked) {
       setSelectedId(clicked.id);
       dragRef.current = { mode: 'select', chopId: clicked.id };
@@ -930,7 +1009,9 @@ export default function App() {
   };
 
   const handlePointerMove = (e) => {
-    if (!dragRef.current || !audio.bufferRef.current) return;
+    const curChop = chopsRef.current.find((c) => c && c.id === selectedIdRef.current);
+    const buf = curChop?.buffer || audio.bufferRef.current;
+    if (!dragRef.current || !buf) return;
     const t = canvasTime(e);
     const mode = dragRef.current.mode;
 
@@ -940,15 +1021,15 @@ export default function App() {
     } else if (mode === 'resize-start') {
       const chopId = dragRef.current.chopId;
       setChopsWithHistory((cur) => cur.map((c) => {
-        if (c.id !== chopId) return c;
+        if (!c || c.id !== chopId) return c;
         const newStart = Math.min(c.end - MIN_CUT, Math.max(0, t));
         return { ...c, start: newStart };
       }), false);
     } else if (mode === 'resize-end') {
       const chopId = dragRef.current.chopId;
-      const dur = audio.bufferRef.current.duration;
+      const dur = buf.duration;
       setChopsWithHistory((cur) => cur.map((c) => {
-        if (c.id !== chopId) return c;
+        if (!c || c.id !== chopId) return c;
         const newEnd = Math.max(c.start + MIN_CUT, Math.min(dur, t));
         return { ...c, end: newEnd };
       }), false);
@@ -991,13 +1072,13 @@ export default function App() {
 
   // Acciones de Chops
   const removeChop = (id) => {
-    setChopsWithHistory((c) => c.filter((x) => x.id !== id));
+    setChopsWithHistory((c) => c.filter((x) => x && x.id !== id));
     if (selectedId === id) setSelectedId(null);
   };
 
   const selectChop = (id) => {
     setSelectedId(id);
-    const chop = chops.find((c) => c.id === id);
+    const chop = chops.find((c) => c && c.id === id);
     if (chop && audio.bufferRef.current) {
       const result = detectPitch(audio.bufferRef.current, chop);
       if (result) {
@@ -1009,11 +1090,11 @@ export default function App() {
   };
 
   const renameChop = (id, newName) => {
-    setChopsWithHistory((cur) => cur.map((c) => (c.id === id ? { ...c, name: newName } : c)));
+    setChopsWithHistory((cur) => cur.map((c) => (c && c.id === id ? { ...c, name: newName } : c)));
   };
 
   const clearAllChops = () => {
-    if (!chops.length) return;
+    if (!chops.some(Boolean)) return;
     setChopsWithHistory([]);
     setSelectedId(null);
     audio.setStatus('Todos los cortes eliminados.');
@@ -1036,12 +1117,60 @@ export default function App() {
     audio.setStatus(`16 cortes automáticos listos — cada pad tiene su propio chop.`);
   };
 
+  const autoSliceTransients = useCallback((sens = transientSensitivity) => {
+    if (!audio.bufferRef.current) {
+      audio.setStatus('Carga un sample primero para detectar transitorios.');
+      return;
+    }
+    const buf = audio.bufferRef.current;
+    const slices = detectTransients(buf, { sensitivity: sens, maxChops: 16 });
+    if (!slices || slices.length === 0) {
+      audio.setStatus('No se encontraron transitorios suficientes. Prueba con sensibilidad Alta.');
+      return;
+    }
+    setBank('A');
+    const cleanSampleName = (audio.fileInfo || '').split('·')[0].trim().replace(/\.[^/.]+$/, '');
+    const isOneShot = slices.length === 1;
+
+    const generated = slices.map((s, i) => ({
+      id: crypto.randomUUID(),
+      name: isOneShot
+        ? (cleanSampleName || 'Golpe 1')
+        : `Hit ${i + 1}`,
+      start: s.start,
+      end: s.end,
+      color: COLORS[i % COLORS.length],
+      attack: 0.003,
+      release: 0.008,
+    }));
+    setChopsWithHistory(generated);
+    if (generated.length > 0) setSelectedId(generated[0].id);
+    const labelSens = { low: 'Baja', medium: 'Media', high: 'Alta' }[sens] || sens;
+    if (isOneShot) {
+      audio.setStatus(`⚡ Golpe único (One-Shot): Asignado completo al Pad #1 sin fragmentar.`);
+    } else {
+      audio.setStatus(`⚡ ${generated.length} cortes por transitorios listos (Sensibilidad: ${labelSens}).`);
+    }
+  }, [audio, transientSensitivity, setChopsWithHistory]);
+
+  const handleUpdateEnvelope = useCallback((chopId, { attack, release }) => {
+    if (!chopId) return;
+    setChopsWithHistory((prev) => prev.map((c) => {
+      if (!c || c.id !== chopId) return c;
+      return {
+        ...c,
+        ...(attack !== undefined ? { attack } : {}),
+        ...(release !== undefined ? { release } : {}),
+      };
+    }), false);
+  }, [setChopsWithHistory]);
+
   const nudgeChop = useCallback((chopId, deltaSecs) => {
     if (!audio.bufferRef.current || !chopId) return;
     const buf = audio.bufferRef.current;
     setChopsWithHistory((prevChops) => {
       return prevChops.map((c) => {
-        if (c.id !== chopId) return c;
+        if (!c || c.id !== chopId) return c;
         const rawNewStart = c.start + deltaSecs;
         const clampedStart = Math.max(0, Math.min(c.end - 0.03, rawNewStart));
         const cleanStart = findZeroCrossing(buf, clampedStart);
@@ -1143,8 +1272,8 @@ export default function App() {
   };
 
   const detectNote = () => {
-    const chop = chops.find((c) => c.id === selectedId);
-    if (!audio.bufferRef.current) return;
+    const chop = chops.find((c) => c && c.id === selectedId);
+    if (!chop || !audio.bufferRef.current) return;
     const result = detectPitch(audio.bufferRef.current, chop);
     if (result) {
       audio.pitchHzRef.current = result.frequency;
@@ -1371,12 +1500,31 @@ export default function App() {
     audio.setStatus('Nuevo proyecto iniciado.');
   };
 
+  const handleRemoveSample = useCallback(() => {
+    audio.stopAll();
+    audio.stopContinuous();
+    audio.bufferRef.current = null;
+    audio.setBuffer(null);
+    audio.setFileInfo('Sin sample cargado');
+    setChopsWithHistory([]);
+    setSelectedId(null);
+    setZoom(1);
+    setViewStart(0);
+    clearCachedSample().catch(() => {});
+    localStorage.removeItem('vxchop_autosave');
+    audio.setStatus('Sample eliminado. Carga un nuevo archivo de audio.');
+    setTimeout(() => {
+      drawWaveformRef.current?.();
+      drawPlayheadRef.current?.();
+    }, 20);
+  }, [audio, setChopsWithHistory]);
+
   // Alternar Modo Reverse en el chop seleccionado
   const toggleChopReverse = useCallback((chopId) => {
     if (!chopId) return;
     setChopsWithHistory((prev) =>
       prev.map((c) => {
-        if (c.id === chopId) {
+        if (c && c.id === chopId) {
           const nextRev = !c.reverse;
           audio.setStatus(`Modo Reverse ${nextRev ? 'ACTIVADO' : 'DESACTIVADO'} para "${c.name}".`);
           return { ...c, reverse: nextRev };
@@ -1456,14 +1604,14 @@ export default function App() {
   // Datos derivados
   const bankOffset   = BANKS.indexOf(bank) * 16;
   const bankChops    = Array.from({ length: 16 }, (_, i) => chops[bankOffset + i] ?? null);
-  const selectedChop = chops.find((c) => c.id === selectedId);
+  const selectedChop = chops.find((c) => c && c.id === selectedId);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <div className="mpc-shell">
 
-      {/* Header Superior Modular */}
+      {/* Header Superior Modular con Session Bar y Carga de Audio */}
       <MpcHeader
         bpm={bpm}
         setBpm={setBpm}
@@ -1475,16 +1623,45 @@ export default function App() {
         midi={midi}
         vintageMode={audio.vintageMode}
         onOpenShortcuts={() => setShowShortcutsModal(true)}
+        fileInfo={audio.fileInfo}
+        onTriggerLoadAudio={() => mainAudioInputRef.current?.click()}
+        onRemoveSample={handleRemoveSample}
+        audioBuffer={audio.buffer}
+        onNewProject={handleNewProject}
+        onSaveProject={handleSaveProject}
+        onImportProject={handleImportProjectFile}
+        onExportKitZip={handleExportKitZip}
+        isExportingKit={isExportingKit}
+        canExportKit={Boolean(audio.buffer && chops.filter(Boolean).length > 0)}
+        onExportWav={() => audio.exportMix(chops)}
+        canExportWav={Boolean(chops.filter(Boolean).length > 0)}
+        projectInputRef={projectInputRef}
         onCycleVintageMode={() => {
-          const modes = ['modern', 'mpc60', 'sp1200'];
+          const modes = ['modern', 'mpc60', 'sp1200', 's950'];
           const next = modes[(modes.indexOf(audio.vintageMode) + 1) % modes.length];
           audio.setVintageMode(next);
           const labels = {
             modern: 'MODERN STUDIO (24-bit / 44.1kHz Transparente)',
             mpc60: 'AKAI MPC-60 (12-bit / 40kHz Punchy)',
             sp1200: 'E-MU SP-1200 (12-bit / 26kHz Aliasing & SSM2044)',
+            s950: 'AKAI S950 (12-bit / 19.2kHz Crunchy Filter)',
           };
           audio.setStatus(`Motor DAC: ${labels[next] || next}`);
+        }}
+      />
+
+      {/* Input invisible para carga general de audio desde el Header */}
+      <input
+        ref={mainAudioInputRef}
+        type="file"
+        accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac,.aif,.aiff"
+        multiple
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          if (e.target.files?.length) {
+            handleAudioFilesSelected(e.target.files);
+            e.target.value = '';
+          }
         }}
       />
 
@@ -1547,64 +1724,59 @@ export default function App() {
           mainBuffer={audio.buffer}
           pitch={audio.pitch}
           onOpenSampleTab={() => handleSwitchWorkspace('waveform')}
-          onHitPad={() => {
-            const sc = chops.find((c) => c.id === selectedId);
-            if (sc) hitPad(sc, 1.0);
+          onHitPad={(targetChop) => {
+            if (targetChop) {
+              const idx = chops.indexOf(targetChop);
+              hitPad(targetChop, 1.0, idx >= 0 ? idx : null);
+            } else {
+              const sc = chops.find((c) => c.id === selectedId);
+              if (sc) hitPad(sc, 1.0);
+            }
           }}
         />
       </div>
 
-      {/* Cuerpo Principal */}
+      {/* Cuerpo Principal: Modern DAW Layout (Serato / Ableton Style) */}
       <div
         className={`mpc-body mode-${workspaceMode}`}
         style={{ display: (workspaceMode === 'sequencer' || mobileTab === 'sequencer') ? 'none' : '' }}
       >
-
-        {/* Columna Izquierda */}
-        <aside className={`mpc-left ${workspaceMode === 'pads' ? 'hidden-desktop' : ''} ${mobileTab === 'sampler' ? 'mobile-show' : ''}`}>
-
-          {/* Carga de audio compacta */}
-          <label
-            className="load-zone-strip"
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => {
-              e.preventDefault();
-              if (e.dataTransfer?.files?.length) handleAudioFilesSelected(e.dataTransfer.files);
-            }}
-          >
-            <div className="load-prompt">
-              <strong>{audio.fileInfo !== 'Sin sample cargado' ? audio.fileInfo : 'Cargar sample de audio'}</strong>
-              <span>Arrastra un archivo WAV, MP3 u OGG o haz clic</span>
+        {/* Sección Superior: Waveform Hero & Slicing Tools */}
+        <section className={`mpc-studio-top ${workspaceMode === 'pads' ? 'hidden-desktop' : ''} ${mobileTab === 'sampler' ? 'mobile-show' : ''}`}>
+          
+          {/* Drawer / Desplegable de YouTube (Crate Digging) */}
+          {showYouTubeDrawer && (
+            <div className="youtube-drawer-panel">
+              <div className="drawer-header">
+                <span className="drawer-title">
+                  <IconVideo size={13} style={{ marginRight: 6, verticalAlign: 'middle' }} />
+                  YOUTUBE SAMPLER & CRATE DIGGER
+                </span>
+                <button
+                  type="button"
+                  className="drawer-close-btn"
+                  onClick={() => setShowYouTubeDrawer(false)}
+                >
+                  <IconCross size={11} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                  Cerrar
+                </button>
+              </div>
+              <YouTubePlayer
+                onPlayerReady={(player) => { ytPlayerRef.current = player; }}
+                onTimeUpdate={(currentTime) => { ytCurrentTimeRef.current = currentTime; }}
+                onLoadIntoMpc={handleLoadYtIntoMpc}
+                onAudioCaptured={handleAudioCaptured}
+                isLiveChopActive={isLiveChopMode}
+                onToggleLiveChop={() => setIsLiveChopMode((v) => !v)}
+                onRandomJump={(sec) => {
+                  ytCurrentTimeRef.current = sec;
+                  audio.setStatus(`🎯 Aguja soltada en YouTube: ${formatTimeMs(sec)}`);
+                }}
+              />
             </div>
-            <span className="load-btn-pill">Cargar</span>
-            <input
-              type="file"
-              accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac,.aif,.aiff"
-              multiple
-              onChange={(e) => {
-                if (e.target.files?.length) {
-                  handleAudioFilesSelected(e.target.files);
-                  e.target.value = '';
-                }
-              }}
-            />
-          </label>
+          )}
 
-          {/* YouTube Player */}
-          <YouTubePlayer
-            onPlayerReady={(player) => { ytPlayerRef.current = player; }}
-            onTimeUpdate={(currentTime) => { ytCurrentTimeRef.current = currentTime; }}
-            onLoadIntoMpc={handleLoadYtIntoMpc}
-            onAudioCaptured={handleAudioCaptured}
-            isLiveChopActive={isLiveChopMode}
-            onToggleLiveChop={() => setIsLiveChopMode((v) => !v)}
-            onRandomJump={(sec) => {
-              ytCurrentTimeRef.current = sec;
-              audio.setStatus(`🎯 Aguja soltada en YouTube: ${formatTimeMs(sec)}`);
-            }}
-          />
-
-          {/* Waveform Display Modular */}
+          {/* Waveform Display Hero */}
           <WaveformDisplay
             canvasRef={canvasRef}
             playheadCanvasRef={playheadCanvasRef}
@@ -1622,121 +1794,284 @@ export default function App() {
             handlePointerDown={handlePointerDown}
             handlePointerMove={handlePointerMove}
             handlePointerUp={handlePointerUp}
+            hasAudio={Boolean(audio.buffer)}
+            onTriggerLoadAudio={() => mainAudioInputRef.current?.click()}
+            onBatchDrop={handleBatchDrop}
           />
 
-          {/* Barra Unificada de Slicing y Transporte Master */}
-          <div className="waveform-action-strip">
-            <div className="action-btn-group">
-              <button
-                type="button"
-                className={`mpc-btn small ${autoSliceEnabled ? 'active-green' : ''}`}
-                onClick={() => setAutoSliceEnabled((v) => !v)}
-                title="Activar o desactivar Auto-Slice automático al cargar audio"
-              >
-                ⚡ Auto-Slice: {autoSliceEnabled ? 'ON' : 'OFF'}
-              </button>
-              <button
-                className="mpc-btn small auto-slice"
-                disabled={!audio.buffer}
-                onClick={autoSlice16}
-                title="⚡ Auto 16: Divide en 16 cortes equidistantes"
-              >
-                ⚡ Auto 16
-              </button>
-              <button
-                className="mpc-btn small random-slice-btn"
-                disabled={!audio.buffer}
-                onClick={() => randomizeChops(16)}
-                title="🎲 Random Chops: Genera 16 cortes aleatorios musicales"
-              >
-                🎲 Random
-              </button>
-              <button
-                className="mpc-btn small"
-                disabled={!audio.buffer}
-                onClick={detectNote}
-                title="Detección de nota y tonalidad fundamental"
-              >
-                ⟲ Detectar Nota
-              </button>
-            </div>
-
-            <div className="action-btn-group transport-group">
-              <button className="mpc-btn small" disabled={!chops.length} onClick={() => audio.playAll(chops)} title="Reproducir todos los cortes">
-                ▶ Play All
-              </button>
-              <button className="mpc-btn small" disabled={!audio.buffer} onClick={() => { audio.stopAll(); audio.setStatus('Detenido.'); }} title="Detener reproducción">
-                ■ Stop
-              </button>
-              <button className="mpc-btn small accent" disabled={!chops.length} onClick={() => audio.exportMix(chops)} title="Exportar WAV">
-                ⇩ Exportar WAV
-              </button>
-            </div>
-          </div>
-
-          {/* Gestor de Cortes con Deshacer / Rehacer */}
-          <div className="chop-manager">
-            <div className="card-title-row">
-              <span className="card-title">Cortes ({chops.length})</span>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {/* Barra Unificada de Slicing, Transporte y Utilidades — Consola Hardware */}
+          <div className="unified-slicing-bar">
+            {/* Cluster 1: Slicing */}
+            <div className="slicing-cluster cluster-slice">
+              <span className="cluster-tag">CORTES</span>
+              <div className="cluster-inner">
+                {/* Auto 16 Clásico */}
                 <button
+                  type="button"
+                  className="mpc-btn small auto-slice"
+                  disabled={!audio.buffer}
+                  onClick={autoSlice16}
+                  title="⚡ Auto 16: Divide el tema en 16 cortes matemáticos iguales"
+                >
+                  <IconBolt size={12} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                  Auto 16
+                </button>
+
+                {/* Auto-Chop Inteligente por Transitorios / Picos */}
+                <div className="transient-slice-capsule">
+                  <button
+                    type="button"
+                    className="mpc-btn small transient-slice-btn"
+                    disabled={!audio.buffer}
+                    onClick={() => autoSliceTransients(transientSensitivity)}
+                    title="⚡ TRANSITORIOS: Corta automáticamente en los ataques de bombos, cajas o acordes"
+                  >
+                    <IconBolt size={12} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                    Transitorios
+                  </button>
+                  <select
+                    className="transient-sens-select"
+                    value={transientSensitivity}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setTransientSensitivity(next);
+                      if (audio.buffer) autoSliceTransients(next);
+                    }}
+                    title="Sensibilidad de detección de transitorios"
+                    disabled={!audio.buffer}
+                  >
+                    <option value="low">Baja</option>
+                    <option value="medium">Media</option>
+                    <option value="high">Alta</option>
+                  </select>
+                </div>
+
+                <button
+                  type="button"
+                  className="mpc-btn small"
+                  disabled={!audio.buffer}
+                  onClick={() => randomizeChops(16)}
+                  title="🎲 Random: Genera 16 cortes aleatorios musicales"
+                >
+                  <IconDice size={12} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                  Random
+                </button>
+              </div>
+            </div>
+
+            {/* Cluster 2: Transporte & Reproducción */}
+            <div className="slicing-cluster cluster-transport">
+              <span className="cluster-tag">TRANSPORTE</span>
+              <div className="cluster-inner">
+                <button
+                  type="button"
+                  className={`mpc-btn small continuous-play-btn ${audio.isContinuousPlaying ? 'active-green' : ''}`}
+                  disabled={!selectedChop?.buffer && !audio.buffer}
+                  onClick={() => {
+                    if (audio.isContinuousPlaying) audio.stopContinuous();
+                    else {
+                      const targetBuf = selectedChop?.buffer || audio.buffer;
+                      if (targetBuf) audio.playContinuous(viewStart, targetBuf);
+                    }
+                  }}
+                  title="Reproduce el tema continuo para escuchar y cortar al ritmo (Barra espaciadora)"
+                >
+                  {audio.isContinuousPlaying ? (
+                    <>
+                      <IconStop size={12} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                      Detener
+                    </>
+                  ) : (
+                    <>
+                      <IconPlay size={12} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                      Continuo
+                    </>
+                  )}
+                </button>
+
+                {/* Botón Momentáneo Tape Stop / Vinyl Brake */}
+                <button
+                  type="button"
+                  className={`mpc-btn small tape-stop-btn ${audio.isTapeStopping ? 'tape-stopping-active' : ''}`}
+                  disabled={!audio.buffer}
+                  onMouseDown={() => audio.triggerTapeStop(0.85)}
+                  onMouseUp={() => audio.releaseTapeStop()}
+                  onMouseLeave={() => {
+                    if (audio.isTapeStopping) audio.releaseTapeStop();
+                  }}
+                  onTouchStart={(e) => {
+                    e.preventDefault();
+                    audio.triggerTapeStop(0.85);
+                  }}
+                  onTouchEnd={() => audio.releaseTapeStop()}
+                  title="TAPE STOP: Mantén presionado para desacelerar la cinta/vinilo en vivo"
+                >
+                  <IconTape size={13} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                  {audio.isTapeStopping ? 'BRAKE...' : 'Tape Stop'}
+                </button>
+              </div>
+            </div>
+
+            {/* Cluster 3: Acciones en Vivo */}
+            <div className="slicing-cluster cluster-live">
+              <span className="cluster-tag">EN VIVO</span>
+              <div className="cluster-inner">
+                <button
+                  type="button"
+                  className={`mpc-btn small live-tap-btn ${isLiveChopMode ? 'active-red-pulse' : ''}`}
+                  disabled={!audio.buffer}
+                  onClick={() => setIsLiveChopMode((v) => !v)}
+                  title="Live Tap: captura el punto exacto al tocar pads vacíos"
+                >
+                  <span className="live-tap-led" />
+                  {isLiveChopMode ? (
+                    <>
+                      <IconRecord size={11} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                      REC VIVO
+                    </>
+                  ) : (
+                    <>
+                      <IconRecord size={11} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                      Live Tap
+                    </>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  className="mpc-btn small"
+                  disabled={!audio.buffer}
+                  onClick={jumpToRandomPosition}
+                  title="JUMP / DIG: Suelta la aguja en un punto aleatorio del disco"
+                >
+                  🎯 Dig
+                </button>
+
+                <button
+                  type="button"
+                  className={`mpc-btn small ${audio.isMasterRecording ? 'active-red-pulse' : ''}`}
+                  onClick={handleToggleMasterRecord}
+                  title="REC MASTER: Graba en vivo y carga como sample activo"
+                  style={audio.isMasterRecording ? { background: '#ff3b30', color: '#fff', fontWeight: 'bold' } : {}}
+                >
+                  {audio.isMasterRecording ? (
+                    <>
+                      <IconStop size={11} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                      STOP REC
+                    </>
+                  ) : (
+                    <>
+                      <IconRecord size={11} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                      REC MASTER
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Cluster 4: Historial & Utilidades */}
+            <div className="slicing-cluster cluster-history">
+              <span className="cluster-tag">HISTORIAL</span>
+              <div className="cluster-inner">
+                <button
+                  type="button"
+                  className="mpc-btn small icon-btn"
                   onClick={handleUndo}
                   disabled={undoStack.length === 0}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    color: undoStack.length > 0 ? 'var(--screen-text)' : 'var(--muted)',
-                    fontSize: 10,
-                    cursor: undoStack.length > 0 ? 'pointer' : 'default',
-                    fontWeight: 700,
-                  }}
-                  title="↩ Deshacer cambio de cortes (Ctrl+Z)"
+                  title="Deshacer (Ctrl+Z)"
                 >
-                  ↩ Deshacer
+                  <IconUndo size={13} />
                 </button>
                 <button
+                  type="button"
+                  className="mpc-btn small icon-btn"
                   onClick={handleRedo}
                   disabled={redoStack.length === 0}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    color: redoStack.length > 0 ? 'var(--screen-text)' : 'var(--muted)',
-                    fontSize: 10,
-                    cursor: redoStack.length > 0 ? 'pointer' : 'default',
-                    fontWeight: 700,
-                  }}
-                  title="↪ Rehacer cambio de cortes (Ctrl+Y)"
+                  title="Rehacer (Ctrl+Y)"
                 >
-                  ↪ Rehacer
+                  <IconRedo size={13} />
                 </button>
                 {chops.length >= 2 && (
                   <button
+                    type="button"
+                    className="mpc-btn small"
                     onClick={shuffleChops}
-                    style={{ background: 'none', border: 'none', color: 'var(--accent)', fontSize: 9, cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700 }}
                     title="🔀 Mezclar el orden de los cortes en los pads"
                   >
-                    🔀 Mezclar
+                    <IconShuffle size={12} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                    Shuffle
                   </button>
                 )}
+                <button
+                  type="button"
+                  className="mpc-btn small"
+                  disabled={!audio.buffer}
+                  onClick={detectNote}
+                  title="Detección de nota y tonalidad fundamental"
+                >
+                  ⟲ Nota
+                </button>
+              </div>
+            </div>
+
+            {/* Cluster 5: Paneles Secundarios */}
+            <div className="slicing-cluster cluster-drawers">
+              <span className="cluster-tag">PANELES</span>
+              <div className="cluster-inner">
+                <button
+                  type="button"
+                  className={`mpc-btn small ${showYouTubeDrawer ? 'active-amber' : ''}`}
+                  onClick={() => setShowYouTubeDrawer((v) => !v)}
+                  title="Buscador y sampleador de YouTube"
+                >
+                  <IconVideo size={13} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                  YouTube
+                </button>
+
+                <button
+                  type="button"
+                  className={`mpc-btn small ${showChopListDrawer ? 'active-cyan' : ''}`}
+                  onClick={() => setShowChopListDrawer((v) => !v)}
+                  title="Abrir o cerrar la lista detallada de cortes"
+                >
+                  <IconList size={13} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                  Cortes ({chops.length})
+                </button>
+
                 {chops.length > 0 && (
                   <button
+                    type="button"
+                    className="mpc-btn small danger"
                     onClick={clearAllChops}
-                    style={{ background: 'none', border: 'none', color: 'var(--danger)', fontSize: 9, cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.1em' }}
+                    title="Borrar todos los cortes"
                   >
-                    Borrar todos
+                    <IconTrash size={12} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                    Borrar
                   </button>
                 )}
               </div>
             </div>
+          </div>
 
-            {chops.length === 0 ? (
-              <div className="empty-list-hint">
-                No hay cortes creados.<br />
-                Usa <strong>⚡ Auto 16</strong> o dibuja sobre el waveform.
+          {/* Drawer / Desplegable de la Lista de Cortes (si se activa) */}
+          {showChopListDrawer && (
+            <div className="chop-list-drawer-panel">
+              <div className="drawer-header">
+                <span className="drawer-title">
+                  <IconList size={13} style={{ marginRight: 6, verticalAlign: 'middle' }} />
+                  LISTA DETALLADA DE CORTES ({chops.filter(Boolean).length})
+                </span>
+                <button
+                  type="button"
+                  className="drawer-close-btn"
+                  onClick={() => setShowChopListDrawer(false)}
+                >
+                  <IconCross size={11} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                  Cerrar
+                </button>
               </div>
-            ) : (
               <div className="chop-list-side">
-                {chops.map((c) => (
+                {chops.filter(Boolean).map((c) => (
                   <div
                     key={c.id}
                     className={`chop-side-item ${selectedId === c.id ? 'selected' : ''}`}
@@ -1748,158 +2083,42 @@ export default function App() {
                       value={c.name}
                       onChange={(e) => renameChop(c.id, e.target.value)}
                       onClick={(e) => e.stopPropagation()}
-                      title="Haz clic para renombrar el corte"
+                      title="Haz clic para renombrar"
                     />
                     <span className="chop-side-dur">{formatTime(c.end - c.start)}</span>
                     <button
+                      type="button"
                       className="chop-side-play"
                       onClick={(e) => { e.stopPropagation(); hitPad(c); }}
-                      title="Escuchar corte"
+                      title="Escuchar"
                     >
                       ▶
                     </button>
                     <button
+                      type="button"
                       className="chop-side-del"
                       onClick={(e) => { e.stopPropagation(); removeChop(c.id); }}
-                      title="Eliminar corte"
+                      title="Eliminar"
                     >
                       ×
                     </button>
                   </div>
                 ))}
               </div>
-            )}
-          </div>
+            </div>
+          )}
+        </section>
 
-        </aside>
-
-        {/* Columna Derecha */}
-        <main className={`mpc-right ${workspaceMode === 'waveform' ? 'hidden-desktop' : ''} ${mobileTab === 'pads' ? 'mobile-show' : ''}`}>
-
-          {/* Panel Q-Link Modular */}
+        {/* Sección Inferior: Deck de Inspector + Matriz 4x4 de Pads */}
+        <section className={`mpc-studio-bottom ${workspaceMode === 'waveform' ? 'hidden-desktop' : ''} ${mobileTab === 'pads' ? 'mobile-show' : ''}`}>
+          
+          {/* Panel Q-Link (si está activo) */}
           {showQLink && <QLinkPanel audio={audio} />}
 
-          {/* Barra de Herramientas Tube Chops + Guardar/Cargar Proyecto */}
-          {/* Barra de Herramientas Tube Chops + Guardar/Cargar Proyecto */}
-          <div className="tubechops-toolbar">
-            <div className="tubechops-tool-group transport-dig-group">
-              <span className="group-mini-label">DISCO & CAPTURA</span>
-              <button
-                type="button"
-                className={`mpc-btn small continuous-play-btn ${audio.isContinuousPlaying ? 'active-green' : ''}`}
-                disabled={!audio.buffer}
-                onClick={() => {
-                  if (audio.isContinuousPlaying) audio.stopContinuous();
-                  else audio.playContinuous(viewStart);
-                }}
-                title="Reproduce el tema continuo para escuchar y cortar al ritmo (Barra espaciadora)"
-              >
-                {audio.isContinuousPlaying ? '■ Detener' : '▶ Continuo'}
-              </button>
+          {/* Panel Rack FX Analógico (si está activo) */}
+          {showRackFx && <RackFxPanel audio={audio} onClose={() => setShowRackFx(false)} />}
 
-              <button
-                type="button"
-                className={`mpc-btn small live-tap-btn ${isLiveChopMode ? 'active-red-pulse' : ''}`}
-                disabled={!audio.buffer}
-                onClick={() => setIsLiveChopMode((v) => !v)}
-                title="Al tocar teclas o pads vacíos, captura el momento exacto al vuelo"
-              >
-                <span className="live-tap-led" />
-                {isLiveChopMode ? '● REC VIVO' : '🔴 LIVE TAP'}
-              </button>
-
-              <button
-                type="button"
-                className="mpc-btn small"
-                disabled={!audio.buffer}
-                onClick={jumpToRandomPosition}
-                title="JUMP / DIG: Suelta la aguja en un punto aleatorio del disco para encontrar nuevas muestras"
-              >
-                🎯 DIG
-              </button>
-
-              <button
-                type="button"
-                className={`mpc-btn small ${audio.isMasterRecording ? 'active-red-pulse' : ''}`}
-                onClick={handleToggleMasterRecord}
-                title="REC MASTER: Graba en tiempo real el master de la MPC y lo carga como sample activo para re-cortarlo"
-                style={audio.isMasterRecording ? { background: '#ff3b30', color: '#fff', fontWeight: 'bold' } : {}}
-              >
-                {audio.isMasterRecording ? '■ STOP REC' : '● REC MASTER'}
-              </button>
-            </div>
-
-            <div className="tubechops-tool-group chops-quick-group">
-              <span className="group-mini-label">CREATIVIDAD</span>
-              <button
-                type="button"
-                className="mpc-btn small random-slice-btn"
-                disabled={!audio.buffer}
-                onClick={() => randomizeChops(16)}
-                title="Genera 16 cortes aleatorios pero musicales"
-              >
-                🎲 RANDOM
-              </button>
-
-              <button
-                type="button"
-                className="mpc-btn small"
-                disabled={chops.length < 2}
-                onClick={shuffleChops}
-                title="🔀 Mezcla aleatoriamente el orden de los cortes entre los pads"
-              >
-                🔀 SHUFFLE
-              </button>
-            </div>
-
-            <div className="tubechops-tool-group project-group">
-              <span className="group-mini-label">SESIÓN & KIT</span>
-              <button
-                type="button"
-                className="mpc-btn small"
-                onClick={handleNewProject}
-                title="Inicia un proyecto limpio y vacío"
-              >
-                ＋ Nuevo
-              </button>
-
-              <button
-                type="button"
-                className="mpc-btn small"
-                onClick={handleSaveProject}
-                title="Descarga el proyecto completo (.vxchop) con cortes, BPM y ajustes"
-              >
-                💾 Guardar
-              </button>
-
-              <label
-                className="mpc-btn small"
-                style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}
-                title="Carga una sesión previa (.vxchop o .json)"
-              >
-                📂 Cargar
-                <input
-                  ref={projectInputRef}
-                  type="file"
-                  accept=".vxchop,.json"
-                  style={{ display: 'none' }}
-                  onChange={handleImportProjectFile}
-                />
-              </label>
-
-              <button
-                type="button"
-                className="mpc-btn small kit-zip-btn"
-                disabled={!audio.buffer || chops.length === 0 || isExportingKit}
-                onClick={handleExportKitZip}
-                title="Descarga un ZIP con los 16 WAVs cortados e independientes listos para cualquier DAW o MPC"
-              >
-                {isExportingKit ? '⏳ Creando...' : '📦 Kit (.ZIP)'}
-              </button>
-            </div>
-          </div>
-
-          {/* Panel SELECTED PAD Modular */}
+          {/* Inspector Deck del Pad Seleccionado */}
           <SelectedPadPanel
             selectedChop={selectedChop}
             isContinuousPlaying={audio.isContinuousPlaying}
@@ -1909,10 +2128,11 @@ export default function App() {
             clearSingleChop={clearSingleChop}
             onToggleReverse={toggleChopReverse}
             onAssignSound={handleAssignSoundToPad}
+            onUpdateEnvelope={handleUpdateEnvelope}
             selectedPadIndex={selectedPadIndex}
           />
 
-          {/* Matriz 4x4 de Pads Modular */}
+          {/* Matriz 4x4 de Pads con sus controles integrados */}
           <PadMatrix
             bank={bank}
             setBank={setBank}
@@ -1927,6 +2147,8 @@ export default function App() {
             mutedPads={mutedPads}
             showQLink={showQLink}
             setShowQLink={setShowQLink}
+            showRackFx={showRackFx}
+            setShowRackFx={setShowRackFx}
             chops={chops}
             bankChops={bankChops}
             bankOffset={bankOffset}
@@ -1952,8 +2174,7 @@ export default function App() {
             selectedPadIndex={selectedPadIndex}
             setSelectedPadIndex={setSelectedPadIndex}
           />
-
-        </main>
+        </section>
       </div>
 
       {/* Footer de Estado */}

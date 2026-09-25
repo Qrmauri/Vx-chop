@@ -23,3 +23,6 @@ Thumbs.db
 __pycache__/
 *.pyc
 
+# Local tooling
+obsidian-antigravity/
+.antigravity/

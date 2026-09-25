@@ -1,4 +1,13 @@
 import React, { useEffect, useState } from 'react';
+import {
+  IconMusic,
+  IconFolder,
+  IconCross,
+  IconPlus,
+  IconSave,
+  IconZip,
+  IconDownload,
+} from './Icons';
 
 export default function MpcHeader({
   bpm,
@@ -12,6 +21,19 @@ export default function MpcHeader({
   vintageMode = 'modern',
   onCycleVintageMode,
   onOpenShortcuts,
+  fileInfo,
+  onTriggerLoadAudio,
+  audioBuffer,
+  onRemoveSample,
+  onNewProject,
+  onSaveProject,
+  onImportProject,
+  onExportKitZip,
+  isExportingKit,
+  canExportKit,
+  onExportWav,
+  canExportWav,
+  projectInputRef,
 }) {
   const [isTauri, setIsTauri] = useState(false);
 
@@ -48,11 +70,48 @@ export default function MpcHeader({
     }
   };
 
+  const hasLoadedSample = Boolean(fileInfo && fileInfo !== 'Sin sample cargado');
+
   return (
     <header className="mpc-header" data-tauri-drag-region>
+      {/* Logo & Marca */}
       <div className="mpc-logo-group" data-tauri-drag-region>
         <div className="mpc-logo">VX-CHOP</div>
-        <span className="mpc-logo-sub">MPC SAMPLER & SLICER</span>
+        <span className="mpc-logo-sub">MODERN DAW SAMPLER</span>
+      </div>
+
+      <div className="header-sep" />
+
+      {/* Pill de Carga de Audio Rápida */}
+      <div className="header-sample-pill-wrap">
+        <button
+          type="button"
+          className={`header-sample-pill ${hasLoadedSample ? 'has-sample' : 'empty'}`}
+          onClick={onTriggerLoadAudio}
+          title={hasLoadedSample ? `Sample activo: ${fileInfo}. Haz clic para cambiarlo.` : 'Haz clic para cargar un archivo de audio (WAV, MP3, OGG, FLAC)'}
+        >
+          <span className="pill-icon">{hasLoadedSample ? <IconMusic size={13} /> : <IconFolder size={13} />}</span>
+          <span className="pill-text" title={fileInfo}>
+            {hasLoadedSample ? fileInfo : 'Cargar Audio / Sample'}
+          </span>
+          <span className="pill-action-tag">{hasLoadedSample ? 'CAMBIAR' : 'ABRIR'}</span>
+        </button>
+
+        {hasLoadedSample && onRemoveSample && (
+          <button
+            type="button"
+            className="header-sample-remove-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (window.confirm('¿Deseas quitar y borrar el sample de audio actual?')) {
+                onRemoveSample();
+              }
+            }}
+            title="Quitar y descargar el sample actual"
+          >
+            <IconCross size={11} />
+          </button>
+        )}
       </div>
 
       <div className="header-sep" />
@@ -97,42 +156,38 @@ export default function MpcHeader({
         TAP
       </button>
 
-      <div className="header-sep" />
+      <div className="header-sep hide-mobile" />
 
       {/* Afinador / Detección de Nota */}
-      <div className="header-item">
+      <div className="header-item hide-mobile">
         <div className="header-label">Nota</div>
         <div className="header-value" ref={noteNameRef}>—</div>
       </div>
-      <div className="header-item" style={{ minWidth: 42 }}>
+      <div className="header-item hide-mobile" style={{ minWidth: 42 }}>
         <div className="header-label">Cents</div>
         <div className="header-value dim" ref={noteCentsRef} />
       </div>
 
       <div className="header-sep hide-mobile" />
 
-      {/* Chop Activo */}
-      <div className="header-item hide-mobile" style={{ minWidth: 90 }}>
-        <div className="header-label">Seleccionado</div>
-        <div className="header-value dim" style={{ fontSize: 11 }}>
-          {selectedChop ? selectedChop.name : '—'}
-        </div>
-      </div>
-
-      <div className="header-sep hide-mobile" />
-
-      {/* DAC Vintage Engine Selector Rápido */}
+      {/* DAC Vintage Engine Selector */}
       <div className="header-item hide-mobile">
         <div className="header-label">DAC ENGINE</div>
         <button
           type="button"
           className={`header-vintage-badge mode-${vintageMode || 'modern'}`}
           onClick={onCycleVintageMode}
-          title="Motor DAC Vintage: Clic para alternar entre Modern (24b) ➔ MPC-60 (12b 40k) ➔ SP-1200 (12b 26k)"
+          title="Motor DAC Vintage: Alterna entre Modern (24b) ➔ MPC-60 (12b 40k) ➔ SP-1200 (12b 26k) ➔ S950 (12b 19k)"
         >
           <span className="badge-led" />
           <span className="badge-text">
-            {vintageMode === 'mpc60' ? 'MPC-60 12b' : vintageMode === 'sp1200' ? 'SP-1200 26k' : 'MODERN 24b'}
+            {vintageMode === 'mpc60'
+              ? 'MPC-60 12b'
+              : vintageMode === 'sp1200'
+              ? 'SP-1200 26k'
+              : vintageMode === 's950'
+              ? 'S950 19k'
+              : 'MODERN 24b'}
           </span>
         </button>
       </div>
@@ -156,8 +211,77 @@ export default function MpcHeader({
               : 'Haz clic para conectar o buscar controlador MIDI USB'
           }
         >
-          {midi?.connected ? `● ${midi.devices[0]?.name?.slice(0, 10) || 'CONECTADO'}` : '○ DESCONECTADO'}
+          {midi?.connected ? `● ${midi.devices[0]?.name?.slice(0, 10) || 'CONECTADO'}` : '○ MIDI OFF'}
         </div>
+      </div>
+
+      <div className="header-sep hide-mobile" />
+
+      {/* Sesión & Exportación (DAW Toolbar) */}
+      <div className="header-session-group hide-mobile">
+        {onNewProject && (
+          <button
+            type="button"
+            className="header-tool-btn"
+            onClick={onNewProject}
+            title="Nuevo proyecto vacío"
+          >
+            <IconPlus size={12} />
+            <span>Nuevo</span>
+          </button>
+        )}
+        {onSaveProject && (
+          <button
+            type="button"
+            className="header-tool-btn"
+            onClick={onSaveProject}
+            title="Guardar sesión (.vxchop)"
+          >
+            <IconSave size={12} />
+            <span>Guardar</span>
+          </button>
+        )}
+        {onImportProject && (
+          <label
+            className="header-tool-btn"
+            style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}
+            title="Cargar sesión (.vxchop o .json)"
+          >
+            <IconFolder size={12} />
+            <span>Cargar</span>
+            <input
+              ref={projectInputRef}
+              type="file"
+              accept=".vxchop,.json"
+              style={{ display: 'none' }}
+              onChange={onImportProject}
+            />
+          </label>
+        )}
+        {onExportKitZip && (
+          <button
+            type="button"
+            className="header-tool-btn kit-btn"
+            disabled={!canExportKit || isExportingKit}
+            onClick={onExportKitZip}
+            title="Descargar ZIP con los WAVs independientes para cualquier DAW o MPC"
+          >
+            {isExportingKit ? '⏳' : <IconZip size={12} />}
+            <span>Kit ZIP</span>
+          </button>
+        )}
+        {onExportWav && (
+          <button
+            type="button"
+            className="header-tool-btn accent"
+            disabled={!canExportWav}
+            onClick={onExportWav}
+            title="Exportar mezcla completa en WAV"
+          >
+            <IconDownload size={12} />
+            <span>WAV</span>
+          </button>
+        )}
       </div>
 
       {/* VU Meter Estéreo */}

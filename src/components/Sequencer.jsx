@@ -63,6 +63,7 @@ export default function Sequencer({
 
   // Estado para el popover de edición de notas/chops/velocity y exportación
   const [viewMode, setViewMode] = useState('tracks'); // 'tracks' | 'pianoroll'
+  const [trackFilter, setTrackFilter] = useState('pads'); // 'pads' | 'drums' | 'all'
   const [editingStep, setEditingStep] = useState(null); // { trackId, stepIdx, type }
   const [isExporting, setIsExporting] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
@@ -73,6 +74,13 @@ export default function Sequencer({
   const [showVelocityLane, setShowVelocityLane] = useState(true);
   const fileInputRef = useRef({});
 
+  // Pistas filtradas según la vista elegida (16 Pads MPC / Batería 808 / Todas)
+  const visibleTracks = tracks.filter((t) => {
+    if (trackFilter === 'pads') return t.type === 'pad';
+    if (trackFilter === 'drums') return t.type !== 'pad';
+    return true;
+  });
+
   // Preescucha de notas para el Piano Roll
   const handlePreviewNote = (track, noteVal) => {
     try {
@@ -81,6 +89,9 @@ export default function Sequencer({
       const dest = getDestination ? getDestination() : ctx.destination;
       if (track.type === 'bass') {
         playBass(ctx, dest, ctx.currentTime, 1.0, noteVal);
+      } else if (track.type === 'pad') {
+        const chop = chops[track.padIndex];
+        if (chop && onHitPad) onHitPad(chop);
       } else if (track.type === 'chop') {
         if (onHitPad && chops[noteVal]) {
           onHitPad(chops[noteVal]);
@@ -178,12 +189,13 @@ export default function Sequencer({
               onChange={(e) => setSwing(Number(e.target.value))}
               title="Groove / Swing estilo MPC"
             >
-              <option value={50}>50% Recto</option>
-              <option value={54}>54% Leve</option>
-              <option value={58}>58% Lofi</option>
-              <option value={62}>62% MPC</option>
-              <option value={66}>66% Shuffle</option>
-              <option value={71}>71% Dilla</option>
+              <option value={50}>50% Recto (Off)</option>
+              <option value={54}>54% Subtle (MPC 3000)</option>
+              <option value={57}>57% Boom-Bap</option>
+              <option value={60}>60% Classic MPC (MPC 60)</option>
+              <option value={63}>63% J Dilla / Lo-Fi</option>
+              <option value={66}>66% Triplet Shuffle</option>
+              <option value={71}>71% Wonky Groove</option>
             </select>
           </div>
 
@@ -298,22 +310,53 @@ export default function Sequencer({
       </div>
 
 
-      {/* Selector de Modo: Pistas vs Piano Roll */}
+      {/* Selector de Modo: Pistas vs Piano Roll + Filtro de Banco de Pistas */}
       <div className="seq-view-selector-bar">
-        <button
-          type="button"
-          className={`seq-view-tab-btn ${viewMode === 'tracks' ? 'active' : ''}`}
-          onClick={() => setViewMode('tracks')}
-        >
-          🥁 VISTA DE PISTAS (DRUM GRID)
-        </button>
-        <button
-          type="button"
-          className={`seq-view-tab-btn ${viewMode === 'pianoroll' ? 'active' : ''}`}
-          onClick={() => setViewMode('pianoroll')}
-        >
-          🎹 PIANO ROLL (DIBUJAR NOTAS MIDI)
-        </button>
+        <div className="seq-view-tabs-left">
+          <button
+            type="button"
+            className={`seq-view-tab-btn ${viewMode === 'tracks' ? 'active' : ''}`}
+            onClick={() => setViewMode('tracks')}
+          >
+            🥁 VISTA DE PISTAS (GRID)
+          </button>
+          <button
+            type="button"
+            className={`seq-view-tab-btn ${viewMode === 'pianoroll' ? 'active' : ''}`}
+            onClick={() => setViewMode('pianoroll')}
+          >
+            🎹 PIANO ROLL (NOTAS)
+          </button>
+        </div>
+
+        {viewMode === 'tracks' && (
+          <div className="seq-track-filter-tabs">
+            <button
+              type="button"
+              className={`seq-filter-pill ${trackFilter === 'pads' ? 'active' : ''}`}
+              onClick={() => setTrackFilter('pads')}
+              title="Ver las 16 pistas conectadas a los 16 pads de la MPC"
+            >
+              🥁 16 PADS MPC ({tracks.filter((t) => t.type === 'pad').length})
+            </button>
+            <button
+              type="button"
+              className={`seq-filter-pill ${trackFilter === 'drums' ? 'active' : ''}`}
+              onClick={() => setTrackFilter('drums')}
+              title="Ver sintetizador de batería y 808"
+            >
+              🎛️ BATERÍA 808 ({tracks.filter((t) => t.type !== 'pad').length})
+            </button>
+            <button
+              type="button"
+              className={`seq-filter-pill ${trackFilter === 'all' ? 'active' : ''}`}
+              onClick={() => setTrackFilter('all')}
+              title="Ver todas las pistas (20 pistas en total)"
+            >
+              ⚡ TODAS ({tracks.length})
+            </button>
+          </div>
+        )}
       </div>
 
       {viewMode === 'pianoroll' ? (
@@ -344,7 +387,7 @@ export default function Sequencer({
             {Array.from({ length: stepCount }, (_, i) => (
               <div
                 key={i}
-                className={`seq-header-col ${i % 4 === 0 ? 'beat-start' : ''} ${currentStep === i ? 'playhead-active' : ''}`}
+                className={`seq-header-col ${i % 4 === 0 ? 'beat-start' : ''} ${currentStep === i ? 'playhead-active' : ''} beat-chunk-${Math.floor(i / 4) % 2}`}
               >
                 {i + 1}
               </div>
@@ -355,16 +398,30 @@ export default function Sequencer({
 
         {/* Lista de Pistas */}
         <div className="seq-tracks-list">
-          {tracks.map((track) => (
+          {visibleTracks.map((track) => {
+            const isPadTrack = track.type === 'pad';
+            const assignedChop = isPadTrack ? chops[track.padIndex] : null;
+
+            return (
             <div key={track.id} className="seq-track-row">
 
               {/* Encabezado y controles de la Pista */}
               <div className="seq-track-info" style={{ '--track-color': track.color }}>
                 <div className="seq-track-tag" style={{ background: track.color }} />
+                
+                {isPadTrack && (
+                  <span className="seq-pad-badge" style={{ borderColor: track.color }}>
+                    #{track.padIndex + 1}
+                  </span>
+                )}
+
                 <div className="seq-track-meta">
-                  <div className="seq-track-name" title={track.name}>
-                    {track.name}
+                  <div className="seq-track-name" title={assignedChop?.name || track.name}>
+                    {assignedChop?.name || track.name}
                   </div>
+                  {isPadTrack && !assignedChop && (
+                    <span className="seq-empty-pad-tag">Pad sin audio</span>
+                  )}
                   {track.type === 'chop' && chops.length === 0 && (
                     <button className="seq-hint-btn" onClick={onOpenSampleTab}>
                       + Cargar sample
@@ -373,6 +430,21 @@ export default function Sequencer({
                 </div>
 
                 <div className="seq-track-controls">
+                  {/* Botón Audición (Play Pad Sound) */}
+                  {isPadTrack && (
+                    <button
+                      type="button"
+                      className="seq-mini-btn audition"
+                      onClick={() => {
+                        if (assignedChop && onHitPad) onHitPad(assignedChop);
+                      }}
+                      title={`Audicionar Pad #${track.padIndex + 1}`}
+                      disabled={!assignedChop}
+                    >
+                      ▶
+                    </button>
+                  )}
+
                   {/* Botón Silenciar (Mute) */}
                   <button
                     className={`seq-mini-btn mute ${track.muted ? 'active' : ''}`}
@@ -392,7 +464,7 @@ export default function Sequencer({
                   </button>
 
                   {/* Carga de Sample Personalizado */}
-                  <label className="seq-mini-btn upload" title="Cargar tu propio sample de audio">
+                  <label className="seq-mini-btn upload" title="Cargar tu propio sample de audio en esta pista">
                     📁
                     <input
                       type="file"
@@ -422,6 +494,8 @@ export default function Sequencer({
                       noteLabel = noteObj ? noteObj.label : `${step.note}`;
                     } else if (track.type === 'chop') {
                       noteLabel = `P${(step.chopIndex ?? 0) + 1}`;
+                    } else if (track.type === 'pad') {
+                      noteLabel = `#${track.padIndex + 1}`;
                     }
                   }
 
@@ -430,6 +504,7 @@ export default function Sequencer({
                       key={idx}
                       className={[
                         'seq-step-btn',
+                        `beat-chunk-${Math.floor(idx / 4) % 2}`,
                         isBeatStart ? 'beat-divider' : '',
                         step.active ? 'active' : '',
                         isPlayhead ? 'playhead' : '',
@@ -447,15 +522,16 @@ export default function Sequencer({
                           style={{ height: `${Math.round((step.velocity ?? 1) * 100)}%` }}
                         />
                       )}
-                      {noteLabel && <span className="seq-step-badge">{noteLabel}</span>}
+                      {noteLabel && <span className="seq-note-label">{noteLabel}</span>}
                     </button>
                   );
                 })}
               </div>
-
             </div>
-          ))}
+          );
+        })}
         </div>
+
 
         {/* ── Carril Inferior de Velocity (Inspirado en Pantalla Táctil MPC ONE) ────── */}
         {showVelocityLane && (

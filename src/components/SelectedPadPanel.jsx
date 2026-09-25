@@ -10,7 +10,14 @@ export default function SelectedPadPanel({
   onToggleReverse,
   onAssignSound,
   selectedPadIndex = 0,
+  onUpdateChop,
+  onSnapZero,
 }) {
+  const currentChoke = selectedChop?.chokeGroup !== undefined ? selectedChop.chokeGroup : 1;
+  const currentMode = selectedChop?.triggerMode || 'one-shot';
+  const attackMs = Math.round((selectedChop?.attack ?? 0.003) * 1000);
+  const releaseMs = Math.round((selectedChop?.release ?? 0.04) * 1000);
+
   return (
     <div className={`selected-pad-panel ${selectedChop ? 'has-selection' : 'no-selection'}`}>
       <div className="sp-header">
@@ -32,9 +39,15 @@ export default function SelectedPadPanel({
               {selectedChop?.reverse && (
                 <span className="sp-rev-chip">⮌ REVERSE</span>
               )}
+              {selectedChop && (
+                <span className="sp-choke-chip">
+                  {currentChoke > 0 ? `CHOKE G${currentChoke}` : 'POLY'}
+                </span>
+              )}
             </div>
           </div>
         </div>
+
         <div className="sp-time-display">
           <div className="sp-time-col">
             <span className="sp-time-tag">INICIO</span>
@@ -52,6 +65,88 @@ export default function SelectedPadPanel({
           )}
         </div>
       </div>
+
+      {/* Controles de Choke Group, Modo Gate/One-Shot y Envolvente */}
+      {selectedChop && (
+        <div className="sp-engine-row">
+          {/* Selector de Choke Group */}
+          <div className="sp-param-group">
+            <span className="sp-param-label">CHOKE GROUP:</span>
+            <div className="sp-choke-pills" role="group" aria-label="Grupo de corte">
+              {[
+                { label: 'OFF', val: 0, title: 'Poly libre (no corta otros pads)' },
+                { label: 'G1', val: 1, title: 'Grupo 1 (corta pads en G1)' },
+                { label: 'G2', val: 2, title: 'Grupo 2 (corta pads en G2)' },
+                { label: 'G3', val: 3, title: 'Grupo 3 (corta pads en G3)' },
+                { label: 'G4', val: 4, title: 'Grupo 4 (corta pads en G4)' },
+              ].map((cg) => (
+                <button
+                  key={cg.val}
+                  type="button"
+                  className={`sp-choke-btn ${currentChoke === cg.val ? 'active' : ''}`}
+                  onClick={() => onUpdateChop && onUpdateChop(selectedChop.id, { chokeGroup: cg.val })}
+                  title={cg.title}
+                >
+                  {cg.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Selector de Modo One-Shot / Gate */}
+          <div className="sp-param-group">
+            <span className="sp-param-label">DISPARO:</span>
+            <div className="sp-mode-toggle" role="group">
+              <button
+                type="button"
+                className={`sp-mode-btn ${currentMode === 'one-shot' ? 'active' : ''}`}
+                onClick={() => onUpdateChop && onUpdateChop(selectedChop.id, { triggerMode: 'one-shot' })}
+                title="One-Shot: Suena completo al presionar el pad"
+              >
+                ONE-SHOT
+              </button>
+              <button
+                type="button"
+                className={`sp-mode-btn ${currentMode === 'gate' ? 'active' : ''}`}
+                onClick={() => onUpdateChop && onUpdateChop(selectedChop.id, { triggerMode: 'gate' })}
+                title="Gate: Suena únicamente mientras se mantenga pulsado el pad/tecla"
+              >
+                GATE
+              </button>
+            </div>
+          </div>
+
+          {/* Sliders de Envolvente Attack & Release */}
+          <div className="sp-env-group">
+            <div className="sp-env-field">
+              <span className="sp-env-tag">ATK: <strong>{attackMs}ms</strong></span>
+              <input
+                type="range"
+                min="1"
+                max="200"
+                step="1"
+                className="sp-env-slider"
+                value={attackMs}
+                onChange={(e) => onUpdateChop && onUpdateChop(selectedChop.id, { attack: Number(e.target.value) / 1000 })}
+                title="Ataque suave para eliminar transientes abruptos o clicks"
+              />
+            </div>
+            <div className="sp-env-field">
+              <span className="sp-env-tag">REL: <strong>{releaseMs}ms</strong></span>
+              <input
+                type="range"
+                min="5"
+                max="1000"
+                step="5"
+                className="sp-env-slider"
+                value={releaseMs}
+                onChange={(e) => onUpdateChop && onUpdateChop(selectedChop.id, { release: Number(e.target.value) / 1000 })}
+                title="Release: Cola de caída suave al soltar el pad o cortar la voz"
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="sp-controls-row">
         <div className="sp-nudge-group">
@@ -109,6 +204,14 @@ export default function SelectedPadPanel({
         </div>
 
         <div className="sp-actions-group">
+          <button
+            className="sp-action-btn zero-snap-btn"
+            disabled={!selectedChop}
+            onClick={() => selectedChop && onSnapZero && onSnapZero(selectedChop.id)}
+            title="Alinear automáticamente inicio y fin al cruce por cero más cercano (Anti-Clicks)"
+          >
+            ⚡ SNAP ZERO
+          </button>
           <label
             className="sp-action-btn file-assign-btn"
             title="Cargar o cambiar sonido de este pad específico"

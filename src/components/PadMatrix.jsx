@@ -23,10 +23,10 @@ const SIXTEEN_LEVELS_OFFSETS = [
 ];
 
 const MPC_ROW_COLORS = [
-  '#ff3b30', // Fila 1: Bombo / Kick
-  '#ff9500', // Fila 2: Caja / Snare
+  '#ff3b30', // Fila 1: Kick / Bombo
+  '#ff9500', // Fila 2: Snare / Caja
   '#00e5ff', // Fila 3: Hi-Hats
-  '#af52de', // Fila 4: Chops
+  '#af52de', // Fila 4: Chops / Melodía
 ];
 
 export default function PadMatrix({
@@ -39,6 +39,8 @@ export default function PadMatrix({
   mutedPads,
   showQLink,
   setShowQLink,
+  showRackFx,
+  setShowRackFx,
   bank,
   setBank,
   playMode,
@@ -90,136 +92,104 @@ export default function PadMatrix({
       e.target.value = '';
     }
   };
+
   return (
-    <>
-      {/* Barra de Funciones Hardware MPC ONE+ */}
-      <div className="mpc-hardware-bar">
-        <button
-          className={`mpc-hw-btn ${fullLevel ? 'active-red' : ''}`}
-          onClick={() => setFullLevel((v) => !v)}
-          title="FULL LEVEL: Fija la fuerza de todos los golpes al 100% (127)"
-        >
-          <span className="hw-led" />
-          FULL LEVEL
-        </button>
-        <button
-          className={`mpc-hw-btn ${sixteenLevels ? 'active-amber' : ''}`}
-          onClick={() => setSixteenLevels((v) => !v)}
-          title="16 LEVELS: Distribuye el sample seleccionado en 16 afinaciones cromáticas (-8 a +7 semitonos)"
-        >
-          <span className="hw-led" />
-          16 LEVELS
-        </button>
-        <button
-          className={`mpc-hw-btn ${padMuteMode ? 'active-purple' : ''}`}
-          onClick={() => setPadMuteMode((v) => !v)}
-          title="PAD MUTE: Modo en vivo para silenciar o reactivar pads tocándolos"
-        >
-          <span className="hw-led" />
-          PAD MUTE {mutedPads.size > 0 ? `(${mutedPads.size})` : ''}
-        </button>
-        <button
-          className={`mpc-hw-btn qlink-toggle ${showQLink ? 'active-cyan' : ''}`}
-          onClick={() => setShowQLink((v) => !v)}
-          title="Q-LINK: Muestra u oculta las perillas maestras de Filtro, Reso, Pitch, Decay y Drive"
-        >
-          <span className="hw-led" />
-          Q-LINK
-        </button>
-      </div>
+    <div className="pad-section-container">
+      {/* Barra de Control de Pads (Hardware + Bancos + Voicing) */}
+      <div className="pad-control-toolbar">
+        {/* Bancos A / B / C / D */}
+        <div className="pad-bank-group">
+          <span className="deck-group-label">BANCO</span>
+          <div className="bank-pill-group">
+            {BANKS.map((b) => (
+              <button
+                key={b}
+                type="button"
+                className={`bank-pill ${bank === b ? 'active' : ''}`}
+                onClick={() => setBank(b)}
+                title={`Banco ${b} (Pads ${BANKS.indexOf(b) * 16 + 1} al ${BANKS.indexOf(b) * 16 + 16})`}
+              >
+                {b}
+              </button>
+            ))}
+          </div>
+        </div>
 
-      {/* Barra de Bancos y Voicing */}
-      <div className="bank-bar">
-        <span className="bank-label">Banco</span>
-        <div className="bank-btns">
-          {BANKS.map((b) => (
+        {/* Voicing: MONO (Choke) vs POLY */}
+        <div className="pad-voice-group">
+          <span className="deck-group-label">MODO</span>
+          <div className="voice-toggle-group">
             <button
-              key={b}
-              className={`bank-btn ${bank === b ? 'active' : ''}`}
-              onClick={() => setBank(b)}
+              type="button"
+              className={`voice-btn ${playMode === 'mono' ? 'active-mono' : ''}`}
+              onClick={() => setPlayMode('mono')}
+              title="Mono (Choke): Corta el chop anterior al tocar un nuevo pad"
             >
-              {b}
+              <span className="voice-dot" /> MONO
             </button>
-          ))}
+            <button
+              type="button"
+              className={`voice-btn ${playMode === 'poly' ? 'active-poly' : ''}`}
+              onClick={() => setPlayMode('poly')}
+              title="Poly: Sonidos superpuestos simultáneos (acordes)"
+            >
+              <span className="voice-dot" /> POLY
+            </button>
+          </div>
         </div>
 
-        {/* Selector de Voicing: Mono (Choke) vs Poly */}
-        <div className="voice-mode-selector">
-          <span className="voice-mode-label">MODO:</span>
+        {/* Botones Hardware de Performance */}
+        <div className="pad-hw-group">
           <button
-            className={`voice-mode-pill ${playMode === 'mono' ? 'active-mono' : ''}`}
-            onClick={() => setPlayMode('mono')}
-            title="Mono (Choke): Corta el sonido anterior al pulsar un nuevo pad"
+            type="button"
+            className={`hw-toggle-btn ${fullLevel ? 'active-red' : ''}`}
+            onClick={() => setFullLevel((v) => !v)}
+            title="FULL LEVEL: Fija la fuerza al 100% (127)"
           >
-            <span className="pill-dot" />
-            MONO
+            <span className="hw-dot" /> FULL LEVEL
           </button>
+
           <button
-            className={`voice-mode-pill ${playMode === 'poly' ? 'active-poly' : ''}`}
-            onClick={() => setPlayMode('poly')}
-            title="Poly: Sonidos superpuestos simultáneos (acordes, polifonía)"
+            type="button"
+            className={`hw-toggle-btn ${sixteenLevels ? 'active-amber' : ''}`}
+            onClick={() => setSixteenLevels((v) => !v)}
+            title="16 LEVELS: Escala cromática de 16 notas del chop seleccionado"
           >
-            <span className="pill-dot" />
-            POLY
+            <span className="hw-dot" /> 16 LEVELS
+          </button>
+
+          <button
+            type="button"
+            className={`hw-toggle-btn ${padMuteMode ? 'active-purple' : ''}`}
+            onClick={() => setPadMuteMode((v) => !v)}
+            title="PAD MUTE: Silencia o reactiva pads tocándolos"
+          >
+            <span className="hw-dot" /> PAD MUTE {mutedPads.size > 0 ? `(${mutedPads.size})` : ''}
+          </button>
+
+          <button
+            type="button"
+            className={`hw-toggle-btn ${showQLink ? 'active-cyan' : ''}`}
+            onClick={() => setShowQLink((v) => !v)}
+            title="Q-LINK: Muestra u oculta las perillas maestras de Filtro, Reso, Pitch y Drive"
+          >
+            <span className="hw-dot" /> Q-LINK FX
+          </button>
+
+          <button
+            type="button"
+            className={`hw-toggle-btn ${showRackFx ? 'active-vintage' : ''}`}
+            onClick={() => setShowRackFx?.((v) => !v)}
+            title="RACK FX: Módulo de Efectos Analógicos (Vinilo, Cassette Wow/Flutter, Sidechain Ducking, Juno-60 Chorus)"
+          >
+            <span className="hw-dot" /> RACK FX
           </button>
         </div>
 
-        <span className="bank-chop-count">
-          {bankChops.filter(Boolean).length} / 16 cortes asignados
-        </span>
-      </div>
-
-      {/* Quick Bar para Celulares */}
-      <div className="mobile-quick-bar">
-        <button
-          type="button"
-          className="mpc-btn small upload-quick-btn"
-          onClick={() => {
-            setTargetPadIndex(0);
-            padFileInputRef.current?.click();
-          }}
-          title="Subir archivo de audio o samples desde el celular"
-        >
-          📁 Subir
-        </button>
-        <button
-          className="mpc-btn small"
-          disabled={!chops.filter(Boolean).length}
-          onClick={() => playAll(chops.filter(Boolean))}
-        >
-          ▶ Play All
-        </button>
-        <button
-          className="mpc-btn small"
-          disabled={!hasAudioBuffer && !chops.filter(Boolean).length}
-          onClick={stopAll}
-        >
-          ■ Stop
-        </button>
-        <button
-          className={`mpc-btn small ${playMode === 'poly' ? 'poly-active' : 'accent'}`}
-          onClick={() => setPlayMode((m) => (m === 'mono' ? 'poly' : 'mono'))}
-          title="Alternar modo Mono o Poly"
-        >
-          {playMode === 'mono' ? '● Mono' : '★ Poly'}
-        </button>
-        <button
-          type="button"
-          className={`mpc-btn small ${autoSliceEnabled ? 'active-green' : ''}`}
-          onClick={() => setAutoSliceEnabled?.((v) => !v)}
-          title="Activar o desactivar Auto-Slice automático"
-        >
-          ⚡ Auto-Slice: {autoSliceEnabled ? 'ON' : 'OFF'}
-        </button>
-        <button
-          className="mpc-btn small auto-slice"
-          disabled={!hasAudioBuffer}
-          onClick={autoSlice16}
-          title="Cortar el audio en 16 rebanadas iguales"
-          style={{ marginLeft: 'auto' }}
-        >
-          ✂ Cortar 16
-        </button>
+        {/* Contador de cortes */}
+        <div className="pad-status-counter">
+          <span>{bankChops.filter(Boolean).length} / 16 cortes</span>
+        </div>
       </div>
 
       {/* Input general para subidas de lote */}
@@ -242,53 +212,9 @@ export default function PadMatrix({
         onChange={handlePadFileInputChange}
       />
 
-      {/* Banner destacado para subir audio desde celular cuando no hay sample */}
-      {!hasAudioBuffer && chops.filter(Boolean).length === 0 ? (
-        <div
-          className="mobile-upload-banner"
-          onClick={() => {
-            setTargetPadIndex(0);
-            padFileInputRef.current?.click();
-          }}
-          role="button"
-          tabIndex={0}
-        >
-          <div className="upload-banner-content">
-            <span className="upload-banner-icon">📁</span>
-            <div className="upload-banner-info">
-              <span className="upload-banner-title">Subir audio o sonidos</span>
-              <span className="upload-banner-sub">
-                {autoSliceEnabled
-                  ? 'Auto-Slice ON: Divide el tema en 16 cortes'
-                  : 'Auto-Slice OFF: Cada pad acepta su propio sonido'}
-              </span>
-            </div>
-          </div>
-          <button type="button" className="upload-banner-btn" tabIndex={-1}>
-            Elegir audio
-          </button>
-        </div>
-      ) : (
-        <div className="mobile-loaded-bar">
-          <span className="loaded-sample-name" title={fileInfo}>
-            🎵 {fileInfo && fileInfo !== 'Sin sample cargado' ? fileInfo : `${chops.filter(Boolean).length} sonidos en pads`}
-          </span>
-          <button
-            type="button"
-            className="change-sample-btn"
-            onClick={() => {
-              setTargetPadIndex(0);
-              padFileInputRef.current?.click();
-            }}
-          >
-            📂 Cargar sonido
-          </button>
-        </div>
-      )}
-
-      {/* Matriz 4×4 de Pads con Iluminación RGB MPC ONE+ y Soporte de Carpeta Drag & Drop */}
+      {/* Matriz 4×4 de Pads Espaciosa y Cómoda */}
       <div
-        className={`pad-grid ${isDragOver ? 'drop-target-active' : ''}`}
+        className={`pad-grid modern-grid ${isDragOver ? 'drop-target-active' : ''}`}
         onDragOver={(e) => {
           e.preventDefault();
           setIsDragOver(true);
@@ -299,7 +225,7 @@ export default function PadMatrix({
           setIsDragOver(false);
           if (onBatchDrop) onBatchDrop(e);
         }}
-        title="Puedes arrastrar y soltar carpetas de samples de batería o múltiples WAVs directamente aquí"
+        title="Arrastra y suelta muestras WAV o carpetas directamente sobre los pads"
       >
         {isDragOver && (
           <div className="pad-drop-overlay">
@@ -308,10 +234,11 @@ export default function PadMatrix({
             <small>Carga WAVs o carpetas completas a los pads</small>
           </div>
         )}
+
         {Array.from({ length: 16 }, (_, i) => {
           const globalIdx = bankOffset + i;
           const originalChop = bankChops[i];
-          const activeChop = sixteenLevels ? (selectedChop || originalChop || chops[0]) : originalChop;
+          const activeChop = sixteenLevels ? (selectedChop || originalChop || chops.find(Boolean)) : originalChop;
           const isSelected = !sixteenLevels && originalChop && originalChop.id === selectedId;
           const isPlaying  = activeChop && activeChop.id === playingId;
           const isMuted    = activeChop && mutedPads.has(activeChop.id);
@@ -350,10 +277,8 @@ export default function PadMatrix({
                 } else {
                   // Pad vacío:
                   if (autoSliceEnabled && hasAudioBuffer) {
-                    // Si el usuario tiene Auto-Slice activo, reparte automáticamente
                     autoSlice16();
                   } else {
-                    // Si Auto-Slice está desactivado: asignar sonido a este pad específico
                     setTargetPadIndex(globalIdx);
                     padFileInputRef.current?.click();
                   }
@@ -371,21 +296,20 @@ export default function PadMatrix({
                 }
               }}
             >
-              {/* Fila superior: Tecla física + # Pad */}
+              {/* Retroiluminación LED & Superficie de Silicona */}
+              <div className="pad-led-halo" />
+              <div className="pad-silicone-surface" />
+
+              {/* Barra superior del Pad: Tecla de acceso rápido + Número + Reverse */}
               <div className="pad-top-meta">
-                <span className="pad-key-badge-large">{PAD_KEYS[i]}</span>
+                <span className="pad-key-badge">{PAD_KEYS[i]}</span>
                 {originalChop?.reverse && (
-                  <span
-                    className="pad-rev-badge"
-                    title="Modo Reverse activo en este pad"
-                  >
-                    ⮌ REV
-                  </span>
+                  <span className="pad-rev-badge" title="Reverse activo">⮌ REV</span>
                 )}
-                <span className="pad-num-badge">#{globalIdx + 1}</span>
+                <span className="pad-num-badge">#{String(globalIdx + 1).padStart(2, '0')}</span>
               </div>
 
-              {/* Centro: Nombre o Estado */}
+              {/* Centro: Nombre o Nota */}
               {sixteenLevels ? (
                 <div className="pad-16level-meta">
                   <span className="pad-16level-note">{sixteenLevel.note}</span>
@@ -394,20 +318,31 @@ export default function PadMatrix({
                   </span>
                 </div>
               ) : (
-                <span className="pad-name-label">
-                  {isMuted ? '🔇 MUTED' : (originalChop ? originalChop.name : '+ ASIGNAR')}
-                </span>
+                <div className="pad-center-body">
+                  {activeChop ? (
+                    <span className="pad-name-label">
+                      {isMuted ? '🔇 MUTED' : (originalChop?.name || `CHOP ${globalIdx + 1}`)}
+                    </span>
+                  ) : (
+                    <div className="pad-empty-cue">
+                      <span className="pad-empty-plus">+</span>
+                      <span className="pad-empty-text">ASIGNAR</span>
+                    </div>
+                  )}
+                </div>
               )}
 
-              {/* Fila inferior: Minutaje exacto milimétrico */}
+              {/* Fila inferior: Tiempo exacto */}
               <div className="pad-time-row">
                 <span className="pad-timestamp-mono">
                   {originalChop ? formatTimeMs(originalChop.start) : '--:--.---'}
                 </span>
-                {originalChop && (
+                {originalChop ? (
                   <span className="pad-dur-chip">
                     {(originalChop.end - originalChop.start).toFixed(2)}s
                   </span>
+                ) : (
+                  <span className="pad-empty-bank-tag">B{bank}</span>
                 )}
               </div>
             </button>
@@ -415,10 +350,10 @@ export default function PadMatrix({
         })}
       </div>
 
-      {/* Barra de Atajos de Teclado */}
+      {/* Guía rápida de atajos de teclado sutil */}
       <div className="keys-hint">
-        Atajos: <kbd>1-4 / Q-R / A-F / Z-V</kbd> Disparar pads · <kbd>Espacio</kbd> Play/Pausa disco · <kbd>Tab</kbd> Bancos · <kbd>Supr</kbd> Borrar chop · <kbd>Ctrl+Z / Y</kbd> Deshacer/Rehacer
+        Atajos: <kbd>1-4 / Q-R / A-F / Z-V</kbd> Disparar pads · <kbd>Espacio</kbd> Continuo · <kbd>Tab</kbd> Bancos · <kbd>Supr</kbd> Borrar pad · <kbd>Ctrl+Z / Y</kbd> Deshacer/Rehacer
       </div>
-    </>
+    </div>
   );
 }

@@ -177,6 +177,56 @@ export async function exportFullBeatToWav({
           case 'bass':
             playBass(offlineCtx, trackGain, stepTime, vel, note);
             break;
+          case 'pad': {
+            const padIdx = typeof track.padIndex === 'number' ? track.padIndex : (stepData.chopIndex || 0);
+            if (chops && chops[padIdx]) {
+              const chop = chops[padIdx];
+              const s = chop?.buffer || mainBuffer;
+              if (chop && s) {
+                const startSec = Math.max(0, chop.start !== undefined ? chop.start : 0);
+                const endSec = (chop.end !== undefined && chop.end > startSec) ? chop.end : s.duration;
+                const chopDuration = Math.max(0.01, endSec - startSec);
+                const source = offlineCtx.createBufferSource();
+                source.buffer = s;
+                source.playbackRate.setValueAtTime(rate, stepTime);
+
+                let nextChopTime = null;
+                for (let fStep = stepIdx + 1; fStep < stepCount; fStep++) {
+                  if (track.steps[fStep]?.active) {
+                    const fSwing = (fStep % 2 === 1) ? ((swing - 50) / 100) * (stepDuration * 0.66) : 0;
+                    nextChopTime = barStartTime + (fStep * stepDuration) + fSwing;
+                    break;
+                  }
+                }
+                if (!nextChopTime && bar < repeatBars - 1) {
+                  for (let fStep = 0; fStep < stepCount; fStep++) {
+                    if (track.steps[fStep]?.active) {
+                      const fSwing = (fStep % 2 === 1) ? ((swing - 50) / 100) * (stepDuration * 0.66) : 0;
+                      nextChopTime = (bar + 1) * loopDuration + (fStep * stepDuration) + fSwing;
+                      break;
+                    }
+                  }
+                }
+
+                const maxPlayTime = nextChopTime ? Math.max(0.015, nextChopTime - stepTime) : (chopDuration / rate);
+                const playDur = Math.min(chopDuration / rate, maxPlayTime);
+
+                const chopGain = offlineCtx.createGain();
+                const fadeSecs = Math.min(0.004, playDur * 0.1);
+
+                chopGain.gain.setValueAtTime(0, stepTime);
+                chopGain.gain.linearRampToValueAtTime(vel, stepTime + fadeSecs);
+                chopGain.gain.setValueAtTime(vel, stepTime + playDur - fadeSecs);
+                chopGain.gain.linearRampToValueAtTime(0, stepTime + playDur);
+
+                source.connect(chopGain);
+                chopGain.connect(trackGain);
+                source.start(stepTime, startSec, playDur * rate);
+                source.stop(stepTime + playDur + 0.005);
+              }
+            }
+            break;
+          }
           case 'chop': {
             if (chops && chops.length > 0) {
               const chopIdx = (stepData.chopIndex || 0) % chops.length;
